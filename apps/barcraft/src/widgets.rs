@@ -1,37 +1,65 @@
-//! The live tiles on the right of the dock.
+//! The live tiles on the dock. Each sits in its own rounded cell; most are two-line cards with
+//! a small label above a larger value.
 
 use std::time::Instant;
 
 use barcraft_core::calendar::{self, WEEKDAY_SHORT};
+use barcraft_core::clock::{self, Stopwatch, format_bytes, format_rate, format_stopwatch};
 use barcraft_core::cpu::History;
 use barcraft_core::focus::{FocusPhase, FocusTimer, format_countdown};
+use barcraft_core::usage::format_duration;
 use barcraft_core::weather::Sky;
 use barcraft_core::{DockEdge, Settings, TempUnit, Theme, WidgetKind};
-use barcraft_win32::{MemoryStatus, PowerStatus, VolumeStatus};
-use chrono::{DateTime, Datelike, Local, Timelike};
+use barcraft_win32::{
+    DiskSpace, MediaAction, MediaStatus, MemoryStatus, PowerStatus, RecycleBinStatus, VolumeStatus,
+};
+use chrono::{DateTime, Datelike, Local, NaiveDate, Timelike};
 use egui::{
-    Align2, Color32, FontId, Popup, PopupCloseBehavior, RectAlign, Response, RichText, Sense, Ui,
-    vec2,
+    Align2, Color32, FontId, Popup, PopupCloseBehavior, Rect, RectAlign, Response, RichText, Sense,
+    Ui, pos2, vec2,
 };
 
-use crate::draw;
+use crate::draw::{self, MediaGlyph};
 use crate::poller::WeatherState;
+
+/// Horizontal padding inside a card.
+const PAD: f32 = 10.0;
+/// Corner radius of a cell.
+pub const CELL_RADIUS: f32 = 10.0;
+/// Space between a cell and the bar's top and bottom edge.
+pub const CELL_INSET: f32 = 5.0;
 
 /// What a widget asks the app to do.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
     SetVolume(f32),
     SetMuted(bool),
+    SetMicrophoneMuted(bool),
+    Media(MediaAction),
     ToggleDesktop,
+    ShowTray,
+    OpenNotifications,
+    OpenRecycleBin,
+    EmptyRecycleBin,
     OpenSettings,
 }
 
 /// The readings widgets show, copied out of the poller each frame.
+#[derive(Clone)]
 pub struct Readings {
     pub cpu: History,
     pub memory: Option<MemoryStatus>,
     pub power: Option<PowerStatus>,
     pub volume: Option<VolumeStatus>,
+    pub microphone: Option<VolumeStatus>,
+    pub media: Option<MediaStatus>,
+    /// Download speed in bytes per second, newest last.
+    pub net_down: Vec<f64>,
+    pub net_up: f64,
+    pub disk: Option<DiskSpace>,
+    pub recycle_bin: Option<RecycleBinStatus>,
+    pub usage_total: u64,
+    pub usage_top: Vec<(String, u64)>,
     pub weather: WeatherState,
 }
 
@@ -40,16 +68,55 @@ pub struct WidgetUi<'a> {
     pub settings: &'a Settings,
     pub readings: &'a Readings,
     pub focus: &'a mut FocusTimer,
+    pub stopwatch: &'a mut Stopwatch,
     pub calendar: &'a mut Option<(i32, u32)>,
     pub now: DateTime<Local>,
     pub instant: Instant,
     pub height: f32,
     pub actions: Vec<Action>,
+    /// Drawing a preview in the settings gallery: no popups, no actions.
+    pub preview: bool,
+    /// Set by widgets that change faster than once a second (a running stopwatch).
+    pub fast_repaint: bool,
+}
+
+fn truncate(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        text.to_owned()
+    } else {
+        let mut t: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+        t.push('…');
+        t
+    }
 }
 
 impl WidgetUi<'_> {
-    fn text_size(&self) -> f32 {
+    fn s(&self) -> f32 {
         self.settings.size.text_size()
+    }
+
+    fn label_font(&self) -> FontId {
+        FontId::proportional(self.s() * 0.7)
+    }
+
+    fn value_font(&self) -> FontId {
+        FontId::proportional(self.s() * 1.1)
+    }
+
+    fn ink(&self) -> Color32 {
+        draw::color(self.theme.text)
+    }
+
+    fn muted(&self) -> Color32 {
+        draw::color(self.theme.muted)
+    }
+
+    fn accent(&self) -> Color32 {
+        draw::color(self.theme.accent)
+    }
+
+    fn warn(&self) -> Color32 {
+        draw::color(self.theme.warn)
     }
 
     fn popup_align(&self) -> RectAlign {
@@ -59,125 +126,255 @@ impl WidgetUi<'_> {
         }
     }
 
-    /// Reserves a tile `width` wide, draws its hover background and returns it.
-    fn tile(&self, ui: &mut Ui, width: f32, sense: Sense) -> (egui::Rect, Response) {
-        let (rect, resp) = ui.allocate_exact_size(vec2(width, self.height), sense);
-        if resp.hovered() {
-            ui.painter().rect_filled(
-                rect.shrink2(vec2(0.0, 4.0)),
-                8.0,
-                draw::color(self.theme.hover),
-            );
-        }
-        (rect, resp)
-    }
-
-    fn text_width(&self, ui: &Ui, text: &str, size: f32) -> f32 {
+    fn text_width(&self, ui: &Ui, text: &str, font: FontId) -> f32 {
         ui.painter()
-            .layout_no_wrap(text.to_owned(), FontId::proportional(size), Color32::WHITE)
+            .layout_no_wrap(text.to_owned(), font, Color32::WHITE)
             .size()
             .x
+    }
+
+    /// Reserves a cell `width` wide and paints its background; returns the cell's rectangle.
+    fn cell(&self, ui: &mut Ui, width: f32, sense: Sense) -> (Rect, Response) {
+        let (rect, resp) = ui.allocate_exact_size(vec2(width, self.height), sense);
+        let cell = rect.shrink2(vec2(1.0, CELL_INSET));
+        let hot = resp.hovered() && sense.senses_click();
+        let fill = if hot {
+            self.theme.hover
+        } else {
+            self.theme.tile
+        };
+        ui.painter()
+            .rect_filled(cell, CELL_RADIUS, draw::color(fill));
+        (cell, resp)
+    }
+
+    /// Paints a small upper-case label over a larger value, left-aligned in `area`.
+    fn two_lines(
+        &self,
+        ui: &Ui,
+        area: Rect,
+        label: &str,
+        value: &str,
+        label_color: Color32,
+        value_color: Color32,
+    ) {
+        let h = area.height();
+        ui.painter().text(
+            pos2(area.left() + PAD, area.center().y - h * 0.19),
+            Align2::LEFT_CENTER,
+            label.to_uppercase(),
+            self.label_font(),
+            label_color,
+        );
+        ui.painter().text(
+            pos2(area.left() + PAD, area.center().y + h * 0.14),
+            Align2::LEFT_CENTER,
+            value,
+            self.value_font(),
+            value_color,
+        );
+    }
+
+    /// A two-line card with `extra` points of room on its right for an icon or chart.
+    /// Returns the cell, the space for the extra, and the response.
+    fn card(
+        &self,
+        ui: &mut Ui,
+        label: &str,
+        value: &str,
+        extra: f32,
+        sense: Sense,
+    ) -> (Rect, Rect, Response) {
+        self.card_with(ui, label, value, extra, sense, self.muted())
+    }
+
+    /// Like [`Self::card`], with the label in `label_color`.
+    fn card_with(
+        &self,
+        ui: &mut Ui,
+        label: &str,
+        value: &str,
+        extra: f32,
+        sense: Sense,
+        label_color: Color32,
+    ) -> (Rect, Rect, Response) {
+        let text_w = self
+            .text_width(ui, &label.to_uppercase(), self.label_font())
+            .max(self.text_width(ui, value, self.value_font()));
+        let width = text_w + 2.0 * PAD + extra;
+        let (cell, resp) = self.cell(ui, width, sense);
+        let extra_rect = Rect::from_min_max(pos2(cell.right() - extra, cell.top()), cell.max);
+        let text_rect = Rect::from_min_max(cell.min, pos2(cell.right() - extra, cell.bottom()));
+        self.two_lines(ui, text_rect, label, value, label_color, self.ink());
+        (cell, extra_rect, resp)
+    }
+
+    /// An icon-only cell.
+    fn icon_cell(&self, ui: &mut Ui, sense: Sense) -> (Rect, Response) {
+        self.cell(ui, self.height * 0.82, sense)
+    }
+
+    /// A thin bar along the bottom of a cell.
+    fn bottom_bar(&self, ui: &Ui, cell: Rect, fraction: f32, fill: Color32) {
+        let r = Rect::from_min_size(
+            pos2(cell.left() + PAD, cell.bottom() - 7.0),
+            vec2(cell.width() - 2.0 * PAD, 3.0),
+        );
+        draw::bar(
+            ui.painter(),
+            r,
+            fraction,
+            draw::color(self.theme.hover),
+            fill,
+        );
     }
 
     pub fn show(&mut self, ui: &mut Ui, kind: WidgetKind) {
         match kind {
             WidgetKind::Clock => self.clock(ui),
+            WidgetKind::AnalogClock => self.analog_clock(ui),
             WidgetKind::Date => self.date(ui),
+            WidgetKind::DayProgress => {
+                let f = clock::day_fraction(self.now.naive_local());
+                self.progress(ui, "Today", f);
+            }
+            WidgetKind::MonthProgress => {
+                let f = clock::month_fraction(self.now.naive_local());
+                self.progress(ui, calendar::month_name(self.now.month()), f);
+            }
+            WidgetKind::YearProgress => {
+                let f = clock::year_fraction(self.now.naive_local());
+                self.progress(ui, &self.now.year().to_string(), f);
+            }
             WidgetKind::Cpu => self.cpu(ui),
             WidgetKind::Memory => self.memory(ui),
+            WidgetKind::Network => self.network(ui),
+            WidgetKind::Storage => self.storage(ui),
             WidgetKind::Battery => self.battery(ui),
-            WidgetKind::Volume => self.volume(ui),
-            WidgetKind::Weather => self.weather(ui),
-            WidgetKind::FocusTimer => self.focus_timer(ui),
+            WidgetKind::SystemTray => self.system_tray(ui),
+            WidgetKind::Notifications => self.notifications(ui),
+            WidgetKind::RecycleBin => self.recycle_bin(ui),
             WidgetKind::ShowDesktop => self.show_desktop(ui),
+            WidgetKind::Volume => self.volume(ui),
+            WidgetKind::Media => self.media(ui),
+            WidgetKind::Microphone => self.microphone(ui),
+            WidgetKind::FocusTimer => self.focus_timer(ui),
+            WidgetKind::Stopwatch => self.stopwatch(ui),
+            WidgetKind::TimeOnPc => self.time_on_pc(ui),
+            WidgetKind::Weather => self.weather(ui),
+        }
+    }
+
+    fn act(&mut self, action: Action) {
+        if !self.preview {
+            self.actions.push(action);
         }
     }
 
     fn clock(&mut self, ui: &mut Ui) {
         let t = self.now;
-        let text = match (self.settings.clock_24h, self.settings.show_seconds) {
-            (true, false) => format!("{:02}:{:02}", t.hour(), t.minute()),
-            (true, true) => format!("{:02}:{:02}:{:02}", t.hour(), t.minute(), t.second()),
+        let (time, suffix) = match (self.settings.clock_24h, self.settings.show_seconds) {
+            (true, false) => (format!("{:02}:{:02}", t.hour(), t.minute()), None),
+            (true, true) => (
+                format!("{:02}:{:02}:{:02}", t.hour(), t.minute(), t.second()),
+                None,
+            ),
             (false, secs) => {
                 let (pm, h12) = t.hour12();
-                let suffix = if pm { "PM" } else { "AM" };
-                if secs {
-                    format!("{h12}:{:02}:{:02} {suffix}", t.minute(), t.second())
+                let time = if secs {
+                    format!("{h12}:{:02}:{:02}", t.minute(), t.second())
                 } else {
-                    format!("{h12}:{:02} {suffix}", t.minute())
-                }
+                    format!("{h12}:{:02}", t.minute())
+                };
+                (time, Some(if pm { "PM" } else { "AM" }))
             }
         };
-        let size = self.text_size() * 1.25;
-        let w = self.text_width(ui, &text, size) + 18.0;
-        let (rect, resp) = self.tile(ui, w, Sense::hover());
+        let font = FontId::proportional(self.s() * 1.35);
+        let small = self.label_font();
+        let suffix_w = suffix
+            .map(|s| self.text_width(ui, s, small.clone()) + 3.0)
+            .unwrap_or(0.0);
+        let time_w = self.text_width(ui, &time, font.clone());
+        let (cell, resp) = self.cell(ui, time_w + suffix_w + 2.0 * PAD + 4.0, Sense::hover());
+        let left = cell.center().x - (time_w + suffix_w) / 2.0;
         ui.painter().text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            text,
-            FontId::proportional(size),
-            draw::color(self.theme.text),
+            pos2(left, cell.center().y),
+            Align2::LEFT_CENTER,
+            time,
+            font,
+            self.ink(),
         );
+        if let Some(sfx) = suffix {
+            ui.painter().text(
+                pos2(left + time_w + 3.0, cell.center().y + self.s() * 0.25),
+                Align2::LEFT_CENTER,
+                sfx,
+                small,
+                self.muted(),
+            );
+        }
         resp.on_hover_text(self.now.format("%A %-d %B %Y").to_string());
     }
 
-    fn date(&mut self, ui: &mut Ui) {
-        let text = self.now.format("%a %-d %b").to_string();
-        let size = self.text_size();
-        let w = self.text_width(ui, &text, size) + 18.0;
-        let (rect, resp) = self.tile(ui, w, Sense::click());
-        ui.painter().text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            text,
-            FontId::proportional(size),
-            draw::color(self.theme.text),
+    fn analog_clock(&mut self, ui: &mut Ui) {
+        let (cell, resp) = self.cell(ui, self.height * 0.9, Sense::hover());
+        let secs = self.settings.show_seconds.then_some(self.now.second());
+        draw::analog_clock(
+            ui.painter(),
+            cell,
+            (self.now.hour(), self.now.minute(), secs),
+            draw::color(self.theme.hover),
+            self.ink(),
+            self.accent(),
         );
+        resp.on_hover_text(self.now.format("%H:%M · %A %-d %B").to_string());
+    }
+
+    fn date(&mut self, ui: &mut Ui) {
+        let weekday = self.now.format("%A").to_string();
+        let value = self.now.format("%-d %b").to_string();
+        // The weekday is the eye-catcher, so it takes the accent colour.
+        let (_, _, resp) = self.card_with(ui, &weekday, &value, 0.0, Sense::click(), self.accent());
         let resp = resp.on_hover_text("Show the calendar");
+        if self.preview {
+            return;
+        }
         if resp.clicked() {
             *self.calendar = Some((self.now.year(), self.now.month()));
         }
         let today = (self.now.year(), self.now.month(), self.now.day());
         let theme = self.theme;
         let align = self.popup_align();
-        let calendar = &mut *self.calendar;
+        let shown = &mut *self.calendar;
         Popup::from_toggle_button_response(&resp)
             .align(align)
             .gap(8.0)
             .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
-            .show(|ui| month_view(ui, calendar, today, theme));
+            .show(|ui| month_view(ui, shown, today, theme));
+    }
+
+    fn progress(&mut self, ui: &mut Ui, label: &str, fraction: f32) {
+        let value = format!("{:.0}%", fraction * 100.0);
+        let (cell, _, resp) = self.card(ui, label, &value, 0.0, Sense::hover());
+        self.bottom_bar(ui, cell, fraction, self.accent());
+        resp.on_hover_text(format!("{:.1}% of {} has gone by", fraction * 100.0, label));
     }
 
     fn cpu(&mut self, ui: &mut Ui) {
         let load = self.readings.cpu.latest();
-        let text = match load {
-            Some(l) => format!("CPU {:>3.0}%", l * 100.0),
-            None => "CPU  …".to_owned(),
-        };
-        let size = self.text_size();
-        let w = self.text_width(ui, "CPU 100%", size) + 22.0;
-        let (rect, resp) = self.tile(ui, w, Sense::hover());
-        let chart = rect.shrink2(vec2(6.0, self.height * 0.2));
+        let value = load
+            .map(|l| format!("{:.0}%", l * 100.0))
+            .unwrap_or_else(|| "…".into());
+        let (_, extra, resp) = self.card(ui, "CPU", &value, 52.0, Sense::hover());
         let values: Vec<f32> = self.readings.cpu.iter().collect();
         let busy = load.unwrap_or(0.0) > 0.85;
-        let line = draw::color(if busy {
-            self.theme.warn
-        } else {
-            self.theme.accent
-        });
+        let line = if busy { self.warn() } else { self.accent() };
         draw::sparkline(
             ui.painter(),
-            chart,
+            extra.shrink2(vec2(8.0, extra.height() * 0.24)),
             &values,
             self.readings.cpu.capacity(),
             line,
-        );
-        ui.painter().text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            text,
-            FontId::monospace(size * 0.92),
-            draw::color(self.theme.text),
         );
         resp.on_hover_text("Processor load over the last minute");
     }
@@ -186,32 +383,22 @@ impl WidgetUi<'_> {
         let Some(m) = self.readings.memory else {
             return;
         };
-        let size = self.text_size();
-        let text = format!("RAM {:>3}%", m.load_percent);
-        let w = self.text_width(ui, "RAM 100%", size) + 22.0;
-        let (rect, resp) = self.tile(ui, w, Sense::hover());
-        let bar = egui::Rect::from_min_size(
-            egui::pos2(rect.left() + 8.0, rect.bottom() - self.height * 0.24),
-            vec2(rect.width() - 16.0, 3.0),
-        );
-        ui.painter()
-            .rect_filled(bar, 1.5, draw::color(self.theme.tile));
-        let used = egui::Rect::from_min_size(
-            bar.min,
-            vec2(bar.width() * m.load_percent as f32 / 100.0, bar.height()),
-        );
+        let value = format!("{}%", m.load_percent);
+        let ring = self.height * 0.62;
+        let (_, extra, resp) = self.card(ui, "Memory", &value, ring, Sense::hover());
         let fill = if m.load_percent >= 90 {
-            self.theme.warn
+            self.warn()
         } else {
-            self.theme.accent
+            self.accent()
         };
-        ui.painter().rect_filled(used, 1.5, draw::color(fill));
-        ui.painter().text(
-            rect.center() - vec2(0.0, 2.0),
-            Align2::CENTER_CENTER,
-            text,
-            FontId::monospace(size * 0.92),
-            draw::color(self.theme.text),
+        draw::ring(
+            ui.painter(),
+            extra.center() - vec2(4.0, 0.0),
+            ring * 0.28,
+            m.load_percent as f32 / 100.0,
+            3.0,
+            draw::color(self.theme.hover),
+            fill,
         );
         let gib = |b: u64| b as f64 / (1024.0 * 1024.0 * 1024.0);
         resp.on_hover_text(format!(
@@ -221,210 +408,306 @@ impl WidgetUi<'_> {
         ));
     }
 
+    fn network(&mut self, ui: &mut Ui) {
+        let down = self.readings.net_down.last().copied().unwrap_or(0.0);
+        let up_text = format_rate(self.readings.net_up);
+        let down_text = format_rate(down);
+        let arrow_w = 12.0;
+        let chart = 44.0;
+        let text_w = self
+            .text_width(ui, &up_text, self.label_font())
+            .max(self.text_width(ui, &down_text, self.value_font()));
+        let (cell, resp) = self.cell(ui, text_w + arrow_w + 2.0 * PAD + chart, Sense::hover());
+        let h = cell.height();
+        let x = cell.left() + PAD;
+        let up_y = cell.center().y - h * 0.19;
+        let down_y = cell.center().y + h * 0.14;
+        draw::arrow(ui.painter(), pos2(x + 4.0, up_y), 7.0, true, self.muted());
+        draw::arrow(
+            ui.painter(),
+            pos2(x + 4.0, down_y),
+            8.0,
+            false,
+            self.accent(),
+        );
+        ui.painter().text(
+            pos2(x + arrow_w, up_y),
+            Align2::LEFT_CENTER,
+            up_text,
+            self.label_font(),
+            self.muted(),
+        );
+        ui.painter().text(
+            pos2(x + arrow_w, down_y),
+            Align2::LEFT_CENTER,
+            down_text,
+            self.value_font(),
+            self.ink(),
+        );
+        let peak = self
+            .readings
+            .net_down
+            .iter()
+            .copied()
+            .fold(1.0f64, f64::max);
+        let values: Vec<f32> = self
+            .readings
+            .net_down
+            .iter()
+            .map(|v| (v / peak) as f32)
+            .collect();
+        let chart_rect = Rect::from_min_max(pos2(cell.right() - chart, cell.top()), cell.max)
+            .shrink2(vec2(6.0, h * 0.24));
+        draw::sparkline(ui.painter(), chart_rect, &values, 30, self.accent());
+        resp.on_hover_text("Download (below) and upload (above) speed");
+    }
+
+    fn storage(&mut self, ui: &mut Ui) {
+        let Some(d) = self.readings.disk else {
+            return;
+        };
+        let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+        let value = format!("{} free", format_bytes(d.free));
+        let (cell, _, resp) = self.card(ui, &format!("Disk {drive}"), &value, 0.0, Sense::hover());
+        let used = 1.0 - d.free as f32 / d.total.max(1) as f32;
+        let fill = if used > 0.9 {
+            self.warn()
+        } else {
+            self.accent()
+        };
+        self.bottom_bar(ui, cell, used, fill);
+        resp.on_hover_text(format!(
+            "{} free of {}",
+            format_bytes(d.free),
+            format_bytes(d.total)
+        ));
+    }
+
     fn battery(&mut self, ui: &mut Ui) {
         let Some(p) = self.readings.power.filter(|p| p.has_battery) else {
             return;
         };
-        let size = self.text_size();
-        let pct = p
+        let value = p
             .percent
             .map(|v| format!("{v}%"))
             .unwrap_or_else(|| "?".into());
-        let w = self.height * 0.9 + self.text_width(ui, &pct, size) + 14.0;
-        let (rect, resp) = self.tile(ui, w, Sense::hover());
-        let icon = egui::Rect::from_min_size(
-            rect.min + vec2(4.0, 0.0),
-            vec2(self.height * 0.9, rect.height()),
-        );
+        let label = if p.charging {
+            "Charging"
+        } else if p.on_mains {
+            "Plugged in"
+        } else {
+            "Battery"
+        };
+        let icon = self.height * 0.72;
+        let (_, extra, resp) = self.card(ui, label, &value, icon, Sense::hover());
         let fraction = p.percent.map(|v| f32::from(v) / 100.0).unwrap_or(0.0);
         let low = p.percent.is_some_and(|v| v <= 15) && !p.charging;
-        let fill = draw::color(if low {
-            self.theme.warn
-        } else {
-            self.theme.accent
-        });
+        let fill = if low { self.warn() } else { self.accent() };
         draw::battery(
             ui.painter(),
-            icon,
+            extra.translate(vec2(-6.0, 0.0)),
             fraction,
             p.charging,
-            draw::color(self.theme.text),
+            self.ink(),
             fill,
         );
-        ui.painter().text(
-            egui::pos2(icon.right() + 2.0, rect.center().y),
-            Align2::LEFT_CENTER,
-            pct,
-            FontId::proportional(size),
-            draw::color(self.theme.text),
+        resp.on_hover_text(format!("Battery {value}, {}", label.to_lowercase()));
+    }
+
+    fn system_tray(&mut self, ui: &mut Ui) {
+        let (cell, resp) = self.icon_cell(ui, Sense::click());
+        draw::chevron(
+            ui.painter(),
+            cell,
+            self.settings.edge == DockEdge::Bottom,
+            self.ink(),
         );
-        let state = if p.charging {
-            "charging"
-        } else if p.on_mains {
-            "plugged in"
-        } else {
-            "on battery"
+        if resp.on_hover_text("Show the system tray").clicked() {
+            self.act(Action::ShowTray);
+        }
+    }
+
+    fn notifications(&mut self, ui: &mut Ui) {
+        let (cell, resp) = self.icon_cell(ui, Sense::click());
+        draw::bell(ui.painter(), cell, self.ink());
+        if resp.on_hover_text("Open notifications").clicked() {
+            self.act(Action::OpenNotifications);
+        }
+    }
+
+    fn recycle_bin(&mut self, ui: &mut Ui) {
+        let bin = self.readings.recycle_bin;
+        let full = bin.is_some_and(|b| b.items > 0);
+        let (cell, resp) = self.icon_cell(ui, Sense::click());
+        draw::bin(ui.painter(), cell, full, self.ink());
+        let tip = match bin {
+            Some(b) if b.items > 0 => format!(
+                "Recycle Bin: {} item{}, {}\nRight-click to empty it",
+                b.items,
+                if b.items == 1 { "" } else { "s" },
+                format_bytes(b.bytes)
+            ),
+            Some(_) => "The Recycle Bin is empty".to_owned(),
+            None => "Recycle Bin".to_owned(),
         };
-        resp.on_hover_text(format!(
-            "Battery {}, {state}",
-            p.percent.map(|v| format!("{v}%")).unwrap_or_default()
-        ));
+        let resp = resp.on_hover_text(tip);
+        if self.preview {
+            return;
+        }
+        if resp.clicked() {
+            self.act(Action::OpenRecycleBin);
+        }
+        let mut chosen = None;
+        Popup::context_menu(&resp).show(|ui| {
+            if ui.button("Open the Recycle Bin").clicked() {
+                chosen = Some(Action::OpenRecycleBin);
+            }
+            if ui
+                .add_enabled(full, egui::Button::new("Empty the Recycle Bin…"))
+                .on_hover_text("Windows asks you to confirm first")
+                .clicked()
+            {
+                chosen = Some(Action::EmptyRecycleBin);
+            }
+        });
+        if let Some(a) = chosen {
+            self.act(a);
+        }
+    }
+
+    fn show_desktop(&mut self, ui: &mut Ui) {
+        let (cell, resp) = self.icon_cell(ui, Sense::click());
+        draw::desktop(ui.painter(), cell, self.ink());
+        if resp.on_hover_text("Show the desktop").clicked() {
+            self.act(Action::ToggleDesktop);
+        }
     }
 
     fn volume(&mut self, ui: &mut Ui) {
         let Some(v) = self.readings.volume else {
             return;
         };
-        let size = self.text_size();
-        let pct = format!("{:.0}%", v.level * 100.0);
-        let w = self.height * 0.8 + self.text_width(ui, "100%", size) + 12.0;
-        let (rect, resp) = self.tile(ui, w, Sense::click());
-        let icon = egui::Rect::from_min_size(
-            rect.min + vec2(2.0, 0.0),
-            vec2(self.height * 0.8, rect.height()),
-        );
-        let ink = draw::color(if v.muted {
-            self.theme.muted
-        } else {
-            self.theme.text
-        });
-        draw::speaker(ui.painter(), icon, v.level, v.muted, ink);
-        ui.painter().text(
-            egui::pos2(icon.right(), rect.center().y),
-            Align2::LEFT_CENTER,
-            pct,
-            FontId::proportional(size),
+        let value = format!("{:.0}%", v.level * 100.0);
+        let icon = self.height * 0.62;
+        let label = if v.muted { "Muted" } else { "Sound" };
+        let (_, extra, resp) = self.card(ui, label, &value, icon, Sense::click());
+        let ink = if v.muted { self.muted() } else { self.ink() };
+        draw::speaker(
+            ui.painter(),
+            extra.translate(vec2(-6.0, 0.0)),
+            v.level,
+            v.muted,
             ink,
         );
-        if resp.hovered() {
+        if resp.hovered() && !self.preview {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y + i.smooth_scroll_delta.x);
             if scroll.abs() > 0.5 {
                 let step = (scroll / 50.0).clamp(-0.1, 0.1);
-                self.actions
-                    .push(Action::SetVolume((v.level + step).clamp(0.0, 1.0)));
+                self.act(Action::SetVolume((v.level + step).clamp(0.0, 1.0)));
             }
-        }
-        if resp.clicked() {
-            self.actions.push(Action::SetMuted(!v.muted));
         }
         let tip = if v.muted {
             "Muted. Click to unmute."
         } else {
             "Scroll to change the volume, click to mute"
         };
-        resp.on_hover_text(tip);
+        if resp.on_hover_text(tip).clicked() {
+            self.act(Action::SetMuted(!v.muted));
+        }
     }
 
-    fn weather(&mut self, ui: &mut Ui) {
-        let size = self.text_size();
-        let unit = match self.settings.weather.unit {
-            TempUnit::Celsius => "C",
-            TempUnit::Fahrenheit => "F",
+    fn media(&mut self, ui: &mut Ui) {
+        let Some(m) = self.readings.media.clone() else {
+            let (_, _, resp) = self.card(ui, "Media", "Nothing playing", 0.0, Sense::hover());
+            resp.on_hover_text("Play something in a music app or a browser to control it here");
+            return;
         };
-        let (label, sky, day, tip) = match &self.readings.weather {
-            WeatherState::Ready { current, .. } => (
-                format!("{:.0}°", current.temperature),
-                current.sky,
-                current.is_day,
-                format!(
-                    "{}: {}, {:.1} °{unit}\n{}",
-                    self.settings.weather.resolved_name,
-                    current.sky.label(),
-                    current.temperature,
-                    barcraft_core::weather::ATTRIBUTION
-                ),
-            ),
-            WeatherState::Loading => (
-                "…".to_owned(),
-                Sky::Unknown,
-                true,
-                "Loading the weather".to_owned(),
-            ),
-            WeatherState::Failed(why) => (
-                "?".to_owned(),
-                Sky::Unknown,
-                true,
-                format!("{why}. Click to check the place in Settings."),
-            ),
-            WeatherState::Off => (
-                "Set place".to_owned(),
-                Sky::PartlyCloudy,
-                true,
-                "Choose a place in Settings".to_owned(),
-            ),
-        };
-        let w = self.height * 0.85 + self.text_width(ui, &label, size) + 12.0;
-        let (rect, resp) = self.tile(ui, w, Sense::click());
-        let icon = egui::Rect::from_min_size(
-            rect.min + vec2(2.0, 0.0),
-            vec2(self.height * 0.85, rect.height()),
+        let title = truncate(&m.title, 26);
+        let artist = truncate(
+            if m.artist.is_empty() {
+                "Playing"
+            } else {
+                &m.artist
+            },
+            30,
         );
-        draw::sky(
-            ui.painter(),
-            icon,
-            sky,
-            day,
-            draw::color(self.theme.text),
-            draw::color(self.theme.accent),
-        );
-        ui.painter().text(
-            egui::pos2(icon.right(), rect.center().y),
-            Align2::LEFT_CENTER,
-            label,
-            FontId::proportional(size),
-            draw::color(self.theme.text),
-        );
-        let resp = resp.on_hover_text(tip);
-        if resp.clicked() && !matches!(self.readings.weather, WeatherState::Ready { .. }) {
-            self.actions.push(Action::OpenSettings);
+        let button = self.height * 0.56;
+        let (cell, extra, resp) =
+            self.card(ui, &artist, &title, button * 3.0 + 6.0, Sense::hover());
+        resp.on_hover_text(format!("{}\n{}", m.title, m.artist));
+        let glyphs = [
+            (MediaGlyph::Previous, MediaAction::Previous, "Previous"),
+            (
+                if m.playing {
+                    MediaGlyph::Pause
+                } else {
+                    MediaGlyph::Play
+                },
+                MediaAction::PlayPause,
+                if m.playing { "Pause" } else { "Play" },
+            ),
+            (MediaGlyph::Next, MediaAction::Next, "Next"),
+        ];
+        for (i, (glyph, action, tip)) in glyphs.into_iter().enumerate() {
+            let r = Rect::from_center_size(
+                pos2(extra.left() + button * (i as f32 + 0.5), cell.center().y),
+                vec2(button, button),
+            );
+            let id = ui.scope_id().with(("media-button", i));
+            let b = ui.interact(r, id, Sense::click());
+            if b.hovered() {
+                ui.painter().circle_filled(
+                    r.center(),
+                    button * 0.48,
+                    draw::color(self.theme.hover),
+                );
+            }
+            draw::media_glyph(ui.painter(), r, glyph, self.ink());
+            if b.on_hover_text(tip).clicked() {
+                self.act(Action::Media(action));
+            }
+        }
+    }
+
+    fn microphone(&mut self, ui: &mut Ui) {
+        let (cell, resp) = self.icon_cell(ui, Sense::click());
+        match self.readings.microphone {
+            Some(mic) => {
+                let ink = if mic.muted { self.warn() } else { self.ink() };
+                draw::microphone(ui.painter(), cell, mic.muted, ink);
+                let tip = if mic.muted {
+                    "Microphone muted. Click to unmute."
+                } else {
+                    "Microphone on. Click to mute."
+                };
+                if resp.on_hover_text(tip).clicked() {
+                    self.act(Action::SetMicrophoneMuted(!mic.muted));
+                }
+            }
+            None => {
+                draw::microphone(ui.painter(), cell, false, self.muted());
+                resp.on_hover_text("No microphone found");
+            }
         }
     }
 
     fn focus_timer(&mut self, ui: &mut Ui) {
-        let size = self.text_size();
         let phase = self.focus.phase(self.instant);
         let remaining = self.focus.remaining(self.instant);
-        let text = format_countdown(remaining);
-        let w = self.text_width(ui, "00:00", size * 1.05) + 30.0;
-        let (rect, resp) = self.tile(ui, w, Sense::click());
+        let label = match phase {
+            FocusPhase::Idle => "Focus",
+            FocusPhase::Running => "Focusing",
+            FocusPhase::Paused => "Paused",
+            FocusPhase::Finished => "Time's up",
+        };
+        let (cell, _, resp) =
+            self.card(ui, label, &format_countdown(remaining), 0.0, Sense::click());
         let total = self.focus.length().as_secs_f32().max(1.0);
         let done = 1.0 - remaining.as_secs_f32() / total;
-        let track = egui::Rect::from_min_size(
-            egui::pos2(rect.left() + 8.0, rect.bottom() - self.height * 0.24),
-            vec2(rect.width() - 16.0, 3.0),
-        );
-        ui.painter()
-            .rect_filled(track, 1.5, draw::color(self.theme.tile));
-        let accent = draw::color(self.theme.accent);
-        ui.painter().rect_filled(
-            egui::Rect::from_min_size(track.min, vec2(track.width() * done.clamp(0.0, 1.0), 3.0)),
-            1.5,
-            accent,
-        );
+        self.bottom_bar(ui, cell, done, self.accent());
         if phase == FocusPhase::Finished {
-            ui.painter().rect_filled(
-                rect.shrink2(vec2(0.0, 4.0)),
-                8.0,
-                accent.gamma_multiply(0.25),
-            );
-        }
-        let ink = draw::color(if phase == FocusPhase::Paused {
-            self.theme.muted
-        } else {
-            self.theme.text
-        });
-        ui.painter().text(
-            rect.center() - vec2(0.0, 2.0),
-            Align2::CENTER_CENTER,
-            text,
-            FontId::monospace(size * 1.05),
-            ink,
-        );
-        if resp.clicked() {
-            self.focus.toggle(self.instant);
-        }
-        if resp.secondary_clicked() {
-            self.focus.reset();
+            ui.painter()
+                .rect_filled(cell, CELL_RADIUS, self.accent().gamma_multiply(0.22));
         }
         let tip = match phase {
             FocusPhase::Idle => "Focus timer. Click to start, right-click to reset.",
@@ -432,15 +715,207 @@ impl WidgetUi<'_> {
             FocusPhase::Paused => "Paused. Click to resume, right-click to reset.",
             FocusPhase::Finished => "Time's up. Click to start again.",
         };
-        resp.on_hover_text(tip);
+        let resp = resp.on_hover_text(tip);
+        if self.preview {
+            return;
+        }
+        if resp.clicked() {
+            self.focus.toggle(self.instant);
+        }
+        if resp.secondary_clicked() {
+            self.focus.reset();
+        }
     }
 
-    fn show_desktop(&mut self, ui: &mut Ui) {
-        let (rect, resp) = self.tile(ui, self.height * 0.8, Sense::click());
-        draw::desktop(ui.painter(), rect, draw::color(self.theme.text));
-        if resp.on_hover_text("Show the desktop").clicked() {
-            self.actions.push(Action::ToggleDesktop);
+    fn stopwatch(&mut self, ui: &mut Ui) {
+        let elapsed = self.stopwatch.elapsed(self.instant);
+        let running = self.stopwatch.is_running();
+        let (_, _, resp) = self.card(
+            ui,
+            "Stopwatch",
+            &format_stopwatch(elapsed),
+            0.0,
+            Sense::click(),
+        );
+        if running {
+            self.fast_repaint = true;
         }
+        let resp = resp.on_hover_text("Click to start or pause, right-click to reset");
+        if self.preview {
+            return;
+        }
+        if resp.clicked() {
+            self.stopwatch.toggle(self.instant);
+        }
+        if resp.secondary_clicked() {
+            self.stopwatch.reset();
+        }
+    }
+
+    fn time_on_pc(&mut self, ui: &mut Ui) {
+        let value = format_duration(self.readings.usage_total);
+        let (_, _, resp) = self.card(ui, "Today on PC", &value, 0.0, Sense::click());
+        let resp =
+            resp.on_hover_text("Time in front of the PC today. Click for the apps you used most.");
+        if self.preview {
+            return;
+        }
+        let top = self.readings.usage_top.clone();
+        let total = self.readings.usage_total.max(1);
+        let theme = self.theme;
+        Popup::from_toggle_button_response(&resp)
+            .align(self.popup_align())
+            .gap(8.0)
+            .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_width(260.0);
+                ui.label(RichText::new(format!("Today: {}", format_duration(total))).strong());
+                ui.add_space(4.0);
+                if top.is_empty() {
+                    ui.label(RichText::new("Nothing yet today.").weak());
+                }
+                for (app, secs) in &top {
+                    ui.horizontal(|ui| {
+                        ui.add_sized(
+                            vec2(130.0, 18.0),
+                            egui::Label::new(truncate(app, 18)).truncate(),
+                        );
+                        let (r, _) = ui.allocate_exact_size(vec2(70.0, 18.0), Sense::hover());
+                        draw::bar(
+                            ui.painter(),
+                            Rect::from_center_size(r.center(), vec2(r.width(), 5.0)),
+                            *secs as f32 / total as f32,
+                            draw::color(theme.hover),
+                            draw::color(theme.accent),
+                        );
+                        ui.label(RichText::new(format_duration(*secs)).weak());
+                    });
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("Kept on this PC only. Clear it in Settings → Privacy.")
+                        .small()
+                        .weak(),
+                );
+            });
+    }
+
+    fn weather(&mut self, ui: &mut Ui) {
+        let unit = match self.settings.weather.unit {
+            TempUnit::Celsius => "C",
+            TempUnit::Fahrenheit => "F",
+        };
+        let place = self
+            .settings
+            .weather
+            .resolved_name
+            .split(',')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_owned();
+        let (label, value, sky, day) = match &self.readings.weather {
+            WeatherState::Ready { current, .. } => (
+                if place.is_empty() {
+                    "Weather".to_owned()
+                } else {
+                    truncate(&place, 16)
+                },
+                format!("{:.0}°", current.temperature),
+                current.sky,
+                current.is_day,
+            ),
+            WeatherState::Loading => ("Weather".to_owned(), "…".to_owned(), Sky::Unknown, true),
+            WeatherState::Failed(_) => ("Weather".to_owned(), "?".to_owned(), Sky::Unknown, true),
+            WeatherState::Off => (
+                "Weather".to_owned(),
+                "Set place".to_owned(),
+                Sky::PartlyCloudy,
+                true,
+            ),
+        };
+        let icon = self.height * 0.72;
+        let (_, extra, resp) = self.card(ui, &label, &value, icon, Sense::click());
+        draw::sky(
+            ui.painter(),
+            extra.translate(vec2(-6.0, 0.0)),
+            sky,
+            day,
+            self.ink(),
+            self.accent(),
+        );
+        let tip = match &self.readings.weather {
+            WeatherState::Ready { current, .. } => {
+                format!(
+                    "{}, {:.1} °{unit}. Click for the next days.",
+                    current.sky.label(),
+                    current.temperature
+                )
+            }
+            WeatherState::Failed(why) => format!("{why}. Click to check the place in Settings."),
+            WeatherState::Loading => "Loading the weather".to_owned(),
+            WeatherState::Off => "Choose a place in Settings".to_owned(),
+        };
+        let resp = resp.on_hover_text(tip);
+        if self.preview {
+            return;
+        }
+        let WeatherState::Ready { current, .. } = &self.readings.weather else {
+            if resp.clicked() {
+                self.act(Action::OpenSettings);
+            }
+            return;
+        };
+        let current = current.clone();
+        let theme = self.theme;
+        let place_name = self.settings.weather.resolved_name.clone();
+        Popup::from_toggle_button_response(&resp)
+            .align(self.popup_align())
+            .gap(8.0)
+            .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_width(250.0);
+                ui.label(RichText::new(&place_name).strong());
+                ui.label(format!(
+                    "{}, {:.0}°{unit}",
+                    current.sky.label(),
+                    current.temperature
+                ));
+                if let Some(today) = current.days.first() {
+                    ui.label(
+                        RichText::new(format!("Today {:.0}° / {:.0}°", today.max, today.min))
+                            .weak(),
+                    );
+                }
+                if let (Some(rise), Some(set)) = (&current.sunrise, &current.sunset) {
+                    ui.label(RichText::new(format!("Sunrise {rise} · Sunset {set}")).weak());
+                }
+                ui.add_space(6.0);
+                for day in current.days.iter().skip(1) {
+                    ui.horizontal(|ui| {
+                        let name = NaiveDate::parse_from_str(&day.date, "%Y-%m-%d")
+                            .map(|d| d.format("%a %-d").to_string())
+                            .unwrap_or_else(|_| day.date.clone());
+                        ui.add_sized(vec2(70.0, 22.0), egui::Label::new(name));
+                        let (r, _) = ui.allocate_exact_size(vec2(26.0, 22.0), Sense::hover());
+                        draw::sky(
+                            ui.painter(),
+                            r,
+                            day.sky,
+                            true,
+                            draw::color(theme.text),
+                            draw::color(theme.accent),
+                        );
+                        ui.label(format!("{:.0}° / {:.0}°", day.max, day.min));
+                    });
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(barcraft_core::weather::ATTRIBUTION)
+                        .small()
+                        .weak(),
+                );
+            });
     }
 }
 

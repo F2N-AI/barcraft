@@ -64,6 +64,27 @@ impl DockSize {
     }
 }
 
+/// How the bar spreads along its edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DockLayout {
+    /// As wide as its contents, in the middle of the edge.
+    #[default]
+    Centred,
+    /// Across the whole edge: apps on the left, widgets on the right.
+    FullWidth,
+}
+
+impl DockLayout {
+    pub const ALL: [DockLayout; 2] = [DockLayout::Centred, DockLayout::FullWidth];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DockLayout::Centred => "Centred",
+            DockLayout::FullWidth => "Full width",
+        }
+    }
+}
+
 /// How an app with open windows is marked under its icon.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IndicatorStyle {
@@ -186,6 +207,11 @@ pub struct Settings {
     #[serde(deserialize_with = "lenient::value")]
     pub size: DockSize,
     #[serde(deserialize_with = "lenient::value")]
+    pub layout: DockLayout,
+    /// Icons grow a little under the pointer.
+    #[serde(deserialize_with = "lenient::value")]
+    pub magnify_icons: bool,
+    #[serde(deserialize_with = "lenient::value")]
     pub theme: ThemeId,
     #[serde(deserialize_with = "lenient::value")]
     pub clock_24h: bool,
@@ -219,6 +245,8 @@ impl Default for Settings {
         Self {
             edge: DockEdge::Bottom,
             size: DockSize::Medium,
+            layout: DockLayout::Centred,
+            magnify_icons: true,
             theme: ThemeId::Graphite,
             clock_24h: true,
             show_seconds: false,

@@ -219,6 +219,31 @@ pub fn foreground_window() -> Option<WindowId> {
     if h.is_invalid() { None } else { Some(id_of(h)) }
 }
 
+/// Whether the focused window is part of the shell's own taskbar UI: the taskbar, its tray
+/// and the tray's pop-ups (not File Explorer windows, which share the shell's process).
+pub fn foreground_is_shell_ui() -> bool {
+    // SAFETY: no arguments.
+    let h = unsafe { GetForegroundWindow() };
+    if h.is_invalid() {
+        return false;
+    }
+    let class = class_name(h);
+    if matches!(
+        class.as_str(),
+        "CabinetWClass" | "ExploreWClass" | "Progman" | "WorkerW"
+    ) {
+        return false;
+    }
+    let exe = process_exe(pid_of(h));
+    let name = exe
+        .as_deref()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    class.starts_with("Shell_")
+        || matches!(name.as_str(), "explorer.exe" | "shellexperiencehost.exe")
+}
+
 pub fn is_window(id: WindowId) -> bool {
     // SAFETY: IsWindow accepts any value and reports whether it names a window.
     unsafe { IsWindow(Some(hwnd(id))) }.as_bool()

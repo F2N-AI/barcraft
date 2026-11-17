@@ -26,13 +26,22 @@ use barcraft_core::Settings;
 pub const APP_NAME: &str = "BarCraft";
 const INSTANCE_MUTEX: &str = "Local\\BarCraft.SingleInstance";
 
-/// Where the settings file lives: `%APPDATA%\BarCraft\settings.json`.
+/// Where the settings file lives: `%APPDATA%\BarCraft\settings.json`, or in the folder named
+/// by `BARCRAFT_DATA_DIR` (for trying things out without touching the real settings).
 pub fn settings_path() -> PathBuf {
+    if let Some(dir) = std::env::var_os("BARCRAFT_DATA_DIR").filter(|d| !d.is_empty()) {
+        return PathBuf::from(dir).join("settings.json");
+    }
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_default();
     base.join(APP_NAME).join("settings.json")
+}
+
+/// Where "Time on PC" keeps today's totals: `%APPDATA%\BarCraft\usage.json`.
+pub fn usage_path() -> PathBuf {
+    settings_path().with_file_name("usage.json")
 }
 
 pub fn load_settings() -> Settings {
@@ -76,7 +85,7 @@ fn main() {
         }
         Some("--help") | Some("-h") => {
             println!(
-                "{APP_NAME} {}\n\n  barcraft                   start the dock\n  barcraft --restore-taskbar bring the Windows taskbar back and exit",
+                "{APP_NAME} {}\n\n  barcraft                   start the dock\n  barcraft --open-settings    start the dock with its settings open\n  barcraft --restore-taskbar bring the Windows taskbar back and exit",
                 env!("CARGO_PKG_VERSION")
             );
             return;
@@ -89,7 +98,8 @@ fn main() {
         return;
     };
 
-    if let Err(e) = app::run() {
+    let open_settings = args.iter().any(|a| a == "--open-settings");
+    if let Err(e) = app::run(open_settings) {
         log::error!("{APP_NAME} stopped: {e}");
     }
 }

@@ -5,28 +5,35 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use barcraft_core::apps::{DockItem, PinnedApp, WindowRef, build_dock_items, normalize_path};
+use barcraft_core::clock::Stopwatch;
 use barcraft_core::focus::FocusTimer;
-use barcraft_core::{DockEdge, DockSize, IndicatorStyle, Settings, Theme, ThemeId, WidgetKind};
+use barcraft_core::{
+    DockEdge, DockLayout, DockSize, IndicatorStyle, Settings, Theme, ThemeId, WidgetKind,
+};
 use barcraft_win32::{AppBar, Edge, PxRect, WindowId};
 use egui::{
     Align2, Color32, CornerRadius, Id, Margin, Popup, PopupCloseBehavior, Pos2, Rect, RectAlign,
-    Sense, Shadow, Stroke, Ui, vec2,
+    Sense, Shadow, Shape, Stroke, Ui, vec2,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::poller::{Command, DockWatch, Poller};
 use crate::settings_window::{self, Changes, SettingsUi};
-use crate::widgets::{self, Readings, WidgetUi};
+use crate::widgets::{self, CELL_INSET, CELL_RADIUS, Readings, WidgetUi};
 use crate::{APP_NAME, draw, save_settings, taskbar};
 
 /// Gap between the bar and the screen edge, in points.
 const MARGIN: f32 = 6.0;
+/// Inner margin of the bar, left and right, in points.
+const BAR_PAD: f32 = 6.0;
+/// Corner radius of the bar.
+const BAR_RADIUS: u8 = 16;
 /// Room above (or below) the bar for menus, tooltips and the calendar, in points.
 const POPUP_SPACE: f32 = 460.0;
 /// How often to check whether the screen or its scale changed.
 const RECHECK: Duration = Duration::from_secs(2);
 
-pub fn run() -> eframe::Result {
+pub fn run(open_settings: bool) -> eframe::Result {
     let settings = crate::load_settings();
     let viewport = egui::ViewportBuilder::default()
         .with_title(APP_NAME)
@@ -44,7 +51,7 @@ pub fn run() -> eframe::Result {
     eframe::run_native(
         APP_NAME,
         options,
-        Box::new(|cc| Ok(Box::new(BarApp::new(cc, settings)))),
+        Box::new(move |cc| Ok(Box::new(BarApp::new(cc, settings, open_settings)))),
     )
 }
 
@@ -85,10 +92,15 @@ struct BarApp {
     icons: HashMap<String, IconTex>,
     seen_order: Vec<String>,
     focus: FocusTimer,
+    stopwatch: Stopwatch,
     calendar: Option<(i32, u32)>,
     settings_open: bool,
     settings_ui: SettingsUi,
     styled_for: Option<ThemeId>,
+    /// Widths measured on the last frame, used to fit the app area and the full-width layout.
+    widgets_width: f32,
+    apps_scroll: f32,
+    apps_rect: Rect,
 }
 
 fn own_window(cc: &eframe::CreationContext<'_>) -> Option<WindowId> {
@@ -118,7 +130,7 @@ fn to_px(r: Rect, scale: f32) -> PxRect {
 }
 
 impl BarApp {
-    fn new(cc: &eframe::CreationContext<'_>, mut settings: Settings) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, mut settings: Settings, open_settings: bool) -> Self {
         let ctx = cc.egui_ctx.clone();
         let window = own_window(cc);
         if let Some(w) = window {
@@ -136,7 +148,7 @@ impl BarApp {
         taskbar::apply(&mut settings);
         taskbar::spawn_watchdog();
 
-        let poller = Poller::start(ctx.clone());
+        let poller = Poller::start(ctx.clone(), crate::usage_path());
         let focus = FocusTimer::new(Duration::from_secs(u64::from(settings.focus_minutes) * 60));
         let mut app = BarApp {
             settings,
@@ -149,10 +161,14 @@ impl BarApp {
             icons: HashMap::new(),
             seen_order: Vec::new(),
             focus,
+            stopwatch: Stopwatch::default(),
             calendar: None,
-            settings_open: false,
+            settings_open: open_settings,
             settings_ui: SettingsUi::default(),
             styled_for: None,
+            widgets_width: 0.0,
+            apps_scroll: 0.0,
+            apps_rect: Rect::NOTHING,
         };
         app.send_weather();
         // Place the window before its first frame so it never shows in the wrong spot.
@@ -177,6 +193,7 @@ impl BarApp {
             monitor: self.placement.map(|p| p.monitor),
             hide_for_fullscreen: self.settings.hide_for_fullscreen,
             taskbar_mode: self.settings.taskbar_mode,
+            widgets: self.settings.widgets.clone(),
         }
     }
 
@@ -357,27 +374,38 @@ impl BarApp {
         let size = self.settings.size;
         let bar_h = size.bar_height();
         let icon_side = size.icon_size();
-        let (rect, resp) = ui.allocate_exact_size(vec2(icon_side + 14.0, bar_h), Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(vec2(icon_side + 16.0, bar_h), Sense::click());
         let is_front = item
             .windows
             .iter()
             .any(|w| Some(WindowId(w.id)) == foreground);
-        if resp.hovered() || is_front {
-            let fill = if resp.hovered() {
-                theme.hover
-            } else {
-                theme.tile
-            };
-            ui.painter()
-                .rect_filled(rect.shrink2(vec2(1.0, 4.0)), 9.0, draw::color(fill));
-        }
-        let icon_rect = Rect::from_center_size(rect.center(), vec2(icon_side, icon_side));
+        // Every app sits in its own cell; the one in front and the one under the pointer stand out.
+        let fill = if resp.hovered() {
+            draw::color(theme.hover)
+        } else if is_front {
+            draw::color(theme.hover).gamma_multiply(0.7)
+        } else {
+            draw::color(theme.tile)
+        };
+        ui.painter()
+            .rect_filled(rect.shrink2(vec2(1.0, CELL_INSET)), CELL_RADIUS, fill);
+        // Icons grow a little under the pointer, and shrink a little while pressed.
+        let grow = if self.settings.magnify_icons {
+            ctx.animate_bool_with_time(resp.id.with("grow"), resp.hovered(), 0.12)
+        } else {
+            0.0
+        };
         let press = if resp.is_pointer_button_down_on() {
             0.92
         } else {
             1.0
         };
-        let icon_rect = Rect::from_center_size(icon_rect.center(), icon_rect.size() * press);
+        let lift = match self.settings.edge {
+            DockEdge::Bottom => -2.0 * grow,
+            DockEdge::Top => 2.0 * grow,
+        };
+        let side = icon_side * (1.0 + 0.14 * grow) * press;
+        let icon_rect = Rect::from_center_size(rect.center() + vec2(0.0, lift), vec2(side, side));
         match self.icon(ctx, item) {
             Some(tex) => {
                 ui.painter().image(
@@ -398,8 +426,8 @@ impl BarApp {
         if item.is_running() {
             let ink = draw::color(if is_front { theme.accent } else { theme.muted });
             let y = match self.settings.edge {
-                DockEdge::Bottom => rect.bottom() - 4.0,
-                DockEdge::Top => rect.top() + 4.0,
+                DockEdge::Bottom => rect.bottom() - CELL_INSET - 3.5,
+                DockEdge::Top => rect.top() + CELL_INSET + 3.5,
             };
             let x = rect.center().x;
             match self.settings.indicator {
@@ -615,6 +643,9 @@ impl BarApp {
         if changes.import_pins {
             import_taskbar_pins(&mut self.settings);
         }
+        if changes.clear_usage {
+            self.poller.send(Command::ClearUsage);
+        }
         if let Some(on) = changes.autostart {
             let command = std::env::current_exe()
                 .ok()
@@ -643,6 +674,38 @@ impl BarApp {
         self.place(ctx.pixels_per_point(), changes.placement);
         self.poller.send(Command::Watch(self.watch()));
     }
+}
+
+/// The bar's background: a soft shadow, the theme's fill, a faint light on the upper half
+/// and a thin edge, for a glassy look without blurring what's behind.
+fn bar_background(rect: Rect, theme: &Theme) -> Shape {
+    let radius = CornerRadius::same(BAR_RADIUS);
+    let shadow = Shadow {
+        offset: [0, 3],
+        blur: 14,
+        spread: 0,
+        color: Color32::from_black_alpha(80),
+    }
+    .as_shape(rect, radius);
+    let sheen_alpha = if theme.dark { 9 } else { 60 };
+    let upper = Rect::from_min_max(rect.min, Pos2::new(rect.right(), rect.center().y));
+    let upper_radius = CornerRadius {
+        nw: BAR_RADIUS,
+        ne: BAR_RADIUS,
+        sw: 0,
+        se: 0,
+    };
+    Shape::Vec(vec![
+        Shape::Rect(shadow),
+        Shape::rect_filled(rect, radius, draw::color(theme.bar)),
+        Shape::rect_filled(upper, upper_radius, Color32::from_white_alpha(sheen_alpha)),
+        Shape::rect_stroke(
+            rect,
+            radius,
+            Stroke::new(1.0, draw::color(theme.bar_edge)),
+            egui::StrokeKind::Inside,
+        ),
+    ])
 }
 
 fn window_title(w: &WindowRef) -> String {
@@ -686,6 +749,19 @@ impl eframe::App for BarApp {
                 memory: snap.memory,
                 power: snap.power,
                 volume: snap.volume,
+                microphone: snap.microphone,
+                media: snap.media.clone(),
+                net_down: snap.net_down.iter().copied().collect(),
+                net_up: snap.net_up,
+                disk: snap.disk,
+                recycle_bin: snap.recycle_bin,
+                usage_total: snap.usage.total(),
+                usage_top: snap
+                    .usage
+                    .top(6)
+                    .into_iter()
+                    .map(|(app, secs)| (app.to_owned(), secs))
+                    .collect(),
                 weather: snap.weather.clone(),
             };
             (windows, pids, snap.foreground, readings)
@@ -703,41 +779,60 @@ impl eframe::App for BarApp {
         let mut app_actions = Vec::new();
         let mut widget_actions = Vec::new();
         let mut open_menu_from_start = false;
+        let mut fast_repaint = false;
+
+        // How wide the bar may get, and how much of that the apps may use.
+        let gap = 2.0;
+        let screen_w = ctx.content_rect().width();
+        let max_inner = (screen_w - 2.0 * MARGIN - 2.0 * BAR_PAD - 2.0).max(200.0);
+        let start_w = size.icon_size() + 16.0;
+        let separator_w = if self.settings.widgets.is_empty() {
+            0.0
+        } else {
+            9.0
+        };
+        let apps_max =
+            (max_inner - start_w - separator_w - self.widgets_width - 4.0 * gap).max(60.0);
+        // Scroll the app area with the mouse wheel when it doesn't all fit.
+        let wheel = ctx
+            .pointer_hover_pos()
+            .filter(|p| self.apps_rect.contains(*p))
+            .map(|_| ctx.input(|i| i.smooth_scroll_delta.y + i.smooth_scroll_delta.x))
+            .unwrap_or(0.0);
+        self.apps_scroll = (self.apps_scroll - wheel).max(0.0);
 
         let bar = egui::Area::new(Id::unique("barcraft-bar"))
             .anchor(anchor, offset)
             .movable(false)
             .sense(Sense::click_and_drag())
             .show(&ctx, |ui| {
-                egui::Frame::new()
-                    .fill(draw::color(theme.bar))
-                    .stroke(Stroke::new(1.0, draw::color(theme.bar_edge)))
-                    .corner_radius(CornerRadius::same(14))
-                    .inner_margin(Margin::symmetric(6, 0))
-                    .shadow(Shadow {
-                        offset: [0, 2],
-                        blur: 10,
-                        spread: 0,
-                        color: Color32::from_black_alpha(70),
-                    })
+                // The bar's background is painted after its contents are measured, underneath them.
+                let background = ui.painter().add(Shape::Noop);
+                let frame = egui::Frame::new()
+                    .inner_margin(Margin::symmetric(BAR_PAD as i8, 0))
                     .show(ui, |ui| {
+                        if self.settings.layout == DockLayout::FullWidth {
+                            ui.set_min_width(max_inner);
+                        }
                         ui.set_height(bar_h);
                         ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
+                            ui.spacing_mut().item_spacing = vec2(gap, 0.0);
                             // Start menu.
-                            let (rect, resp) = ui.allocate_exact_size(
-                                vec2(size.icon_size() + 12.0, bar_h),
-                                Sense::click(),
+                            let (rect, resp) =
+                                ui.allocate_exact_size(vec2(start_w, bar_h), Sense::click());
+                            let fill = if resp.hovered() {
+                                theme.hover
+                            } else {
+                                theme.tile
+                            };
+                            ui.painter().rect_filled(
+                                rect.shrink2(vec2(1.0, CELL_INSET)),
+                                CELL_RADIUS,
+                                draw::color(fill),
                             );
-                            if resp.hovered() {
-                                ui.painter().rect_filled(
-                                    rect.shrink2(vec2(1.0, 4.0)),
-                                    9.0,
-                                    draw::color(theme.hover),
-                                );
-                            }
                             draw::launcher(ui.painter(), rect, draw::color(theme.text));
-                            let resp = resp.on_hover_text("Start");
+                            let resp =
+                                resp.on_hover_text("Start (right-click for the dock's menu)");
                             if resp.clicked() {
                                 barcraft_win32::open_start_menu();
                             }
@@ -745,47 +840,84 @@ impl eframe::App for BarApp {
                                 open_menu_from_start = true;
                             }
 
-                            for item in &items {
-                                self.app_button(
-                                    ui,
-                                    &ctx,
-                                    item,
-                                    foreground,
-                                    &pids,
-                                    &theme,
-                                    &mut app_actions,
-                                );
-                            }
+                            // Apps, scrolling sideways when there are too many to fit.
+                            let scroll = egui::ScrollArea::horizontal()
+                                .id_salt("barcraft-apps")
+                                .max_width(apps_max)
+                                .max_height(bar_h)
+                                .content_margin(0)
+                                .horizontal_scroll_offset(self.apps_scroll)
+                                .scroll_bar_visibility(
+                                    egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                                )
+                                .show(ui, |ui| {
+                                    // Top-aligned: each cell is exactly as tall as the bar, while the
+                                    // scroll area's own height is open-ended, so centring would push
+                                    // the icons down.
+                                    ui.horizontal_top(|ui| {
+                                        ui.spacing_mut().item_spacing = vec2(gap, 0.0);
+                                        for item in &items {
+                                            self.app_button(
+                                                ui,
+                                                &ctx,
+                                                item,
+                                                foreground,
+                                                &pids,
+                                                &theme,
+                                                &mut app_actions,
+                                            );
+                                        }
+                                    });
+                                });
+                            self.apps_scroll = scroll.state.clamped_offset().x;
+                            self.apps_rect = scroll.inner_rect;
 
-                            if !self.settings.widgets.is_empty() {
-                                let (rect, _) =
-                                    ui.allocate_exact_size(vec2(9.0, bar_h), Sense::hover());
-                                ui.painter().line_segment(
-                                    [
-                                        Pos2::new(rect.center().x, rect.top() + bar_h * 0.25),
-                                        Pos2::new(rect.center().x, rect.bottom() - bar_h * 0.25),
-                                    ],
-                                    Stroke::new(1.0, draw::color(theme.bar_edge)),
-                                );
-                                let widget_list = self.settings.widgets.clone();
-                                let mut wui = WidgetUi {
-                                    theme,
-                                    settings: &self.settings,
-                                    readings: &readings,
-                                    focus: &mut self.focus,
-                                    calendar: &mut self.calendar,
-                                    now,
-                                    instant,
-                                    height: bar_h,
-                                    actions: Vec::new(),
-                                };
-                                for kind in widget_list {
-                                    wui.show(ui, kind);
-                                }
-                                widget_actions = wui.actions;
+                            if self.settings.widgets.is_empty() {
+                                self.widgets_width = 0.0;
+                                return;
                             }
+                            if self.settings.layout == DockLayout::FullWidth {
+                                // Push the widgets to the far end.
+                                let used = ui.min_rect().width();
+                                let spare =
+                                    max_inner - used - separator_w - self.widgets_width - 2.0 * gap;
+                                ui.add_space(spare.max(0.0));
+                            }
+                            let (rect, _) =
+                                ui.allocate_exact_size(vec2(separator_w, bar_h), Sense::hover());
+                            ui.painter().line_segment(
+                                [
+                                    Pos2::new(rect.center().x, rect.top() + bar_h * 0.3),
+                                    Pos2::new(rect.center().x, rect.bottom() - bar_h * 0.3),
+                                ],
+                                Stroke::new(1.0, draw::color(theme.bar_edge)),
+                            );
+                            let widgets_left = ui.cursor().left();
+                            let widget_list = self.settings.widgets.clone();
+                            let mut wui = WidgetUi {
+                                theme,
+                                settings: &self.settings,
+                                readings: &readings,
+                                focus: &mut self.focus,
+                                stopwatch: &mut self.stopwatch,
+                                calendar: &mut self.calendar,
+                                now,
+                                instant,
+                                height: bar_h,
+                                actions: Vec::new(),
+                                preview: false,
+                                fast_repaint: false,
+                            };
+                            for kind in widget_list {
+                                wui.show(ui, kind);
+                            }
+                            widget_actions = wui.actions;
+                            fast_repaint = wui.fast_repaint;
+                            self.widgets_width = (ui.min_rect().right() - widgets_left).max(0.0);
                         });
                     });
+                ui.painter()
+                    .set(background, bar_background(frame.response.rect, &theme));
             });
 
         // The dock's own menu, from a right-click on the bar or on the Start button.
@@ -826,19 +958,28 @@ impl eframe::App for BarApp {
             match a {
                 widgets::Action::SetVolume(v) => self.poller.send(Command::SetVolume(v)),
                 widgets::Action::SetMuted(m) => self.poller.send(Command::SetMuted(m)),
+                widgets::Action::SetMicrophoneMuted(m) => {
+                    self.poller.send(Command::SetMicrophoneMuted(m));
+                }
+                widgets::Action::Media(m) => self.poller.send(Command::Media(m)),
                 widgets::Action::ToggleDesktop => barcraft_win32::toggle_desktop(),
+                widgets::Action::ShowTray => self.poller.send(Command::ShowTray),
+                widgets::Action::OpenNotifications => barcraft_win32::open_notification_center(),
+                widgets::Action::OpenRecycleBin => {
+                    barcraft_win32::open_recycle_bin();
+                }
+                widgets::Action::EmptyRecycleBin => self.poller.send(Command::EmptyRecycleBin),
                 widgets::Action::OpenSettings => self.settings_open = true,
             }
         }
 
         if self.settings_open {
-            let weather_state = self.poller.snapshot().weather.clone();
             let mut open = true;
             let changes = settings_window::show(
                 &ctx,
                 &mut self.settings,
                 &mut self.settings_ui,
-                &weather_state,
+                &readings,
                 &mut open,
             );
             if !open {
@@ -876,9 +1017,13 @@ impl eframe::App for BarApp {
             }
         }
 
-        let ms = 1000u64
-            .saturating_sub(u64::from(now.timestamp_subsec_millis()))
-            .max(20);
+        let ms = if fast_repaint {
+            100
+        } else {
+            1000u64
+                .saturating_sub(u64::from(now.timestamp_subsec_millis()))
+                .max(20)
+        };
         ctx.request_repaint_after(Duration::from_millis(ms));
     }
 

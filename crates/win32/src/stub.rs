@@ -29,6 +29,35 @@ impl SingleInstance {
     }
 }
 
+pub fn empty_recycle_bin() {}
+pub fn idle_seconds() -> Option<u32> {
+    None
+}
+pub fn microphone() -> Option<VolumeStatus> {
+    None
+}
+pub fn net_counters() -> Option<crate::NetCounters> {
+    None
+}
+pub fn recycle_bin() -> Option<crate::RecycleBinStatus> {
+    None
+}
+pub fn set_microphone_muted(_muted: bool) {}
+pub fn system_drive_space() -> Option<crate::DiskSpace> {
+    None
+}
+pub fn media_action(_action: crate::MediaAction) {}
+pub fn media_status() -> Option<crate::MediaStatus> {
+    None
+}
+pub fn focus_system_tray() {}
+pub fn open_notification_center() {}
+pub fn open_recycle_bin() -> bool {
+    false
+}
+pub fn foreground_is_shell_ui() -> bool {
+    false
+}
 pub fn set_muted(_muted: bool) {}
 pub fn set_volume(_level: f32) {}
 pub fn volume() -> Option<VolumeStatus> {

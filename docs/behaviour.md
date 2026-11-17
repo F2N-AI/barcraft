@@ -48,12 +48,24 @@ product's code, text or artwork.
 
 ## Widgets
 
-- Clock (12/24-hour, optional seconds), date (click for a month calendar, with arrows and a jump
-  back to today), processor load (with a one-minute chart), memory in use (details on hover),
-  battery (hidden on PCs without one), volume (scroll to change, click to mute), weather for a
-  chosen place (Open-Meteo, no account), focus timer (click to start or pause, right-click to
-  reset), show desktop.
-- Add, remove and reorder them in Settings.
+- Every widget sits in its own rounded cell; most are two-line cards (a small upper-case label
+  over a larger value), some are a single icon.
+- Time: clock (12/24-hour, optional seconds), analog clock, date (click for a month calendar,
+  with arrows and a jump back to today), day, month and year progress.
+- System: processor load (with a one-minute chart), memory in use (ring), network speed
+  (download, upload and a short chart), free space on the system drive, battery (hidden on PCs
+  without one), system tray (brings the hidden Windows taskbar up with its tray until the pointer
+  leaves it), notifications (opens the notification centre), Recycle Bin (click to open; its menu
+  empties it after Windows' own confirmation), show desktop.
+- Sound and media: what's playing (from the system media session) with previous, play/pause and
+  next; volume (scroll to change, click to mute); microphone (click to mute or unmute).
+- Productivity: focus timer (click to start or pause, right-click to reset), stopwatch (the
+  same), Time on PC (today's time with someone at the PC, by app in front; local only, starts
+  over each day, clearable).
+- Online: weather for a chosen place (Open-Meteo, no account), with today's high and low, the
+  next three days, sunrise and sunset in its pop-up.
+- Settings has a gallery of all widgets with live previews, categories and search; the dock's
+  own list there reorders and removes them.
 
 ## Settings
 

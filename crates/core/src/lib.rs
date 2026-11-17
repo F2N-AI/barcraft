@@ -16,14 +16,18 @@
 
 pub mod apps;
 pub mod calendar;
+pub mod clock;
 pub mod cpu;
 pub mod focus;
 pub mod settings;
 pub mod theme;
+pub mod usage;
 pub mod weather;
 pub mod widgets;
 
 pub use apps::{DockItem, PinnedApp, WindowRef, build_dock_items, normalize_path};
-pub use settings::{DockEdge, DockSize, IndicatorStyle, Settings, TaskbarMode, TempUnit};
+pub use settings::{
+    DockEdge, DockLayout, DockSize, IndicatorStyle, Settings, TaskbarMode, TempUnit,
+};
 pub use theme::{Rgba, Theme, ThemeId};
 pub use widgets::WidgetKind;

@@ -100,6 +100,40 @@ pub struct VolumeStatus {
     pub muted: bool,
 }
 
+/// Bytes received and sent by all physical network adapters since they started.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NetCounters {
+    pub received: u64,
+    pub sent: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiskSpace {
+    pub free: u64,
+    pub total: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecycleBinStatus {
+    pub items: u64,
+    pub bytes: u64,
+}
+
+/// What a media app (a music player, a browser tab with video) reports it is playing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaStatus {
+    pub title: String,
+    pub artist: String,
+    pub playing: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaAction {
+    PlayPause,
+    Next,
+    Previous,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Edge {
     Top,
