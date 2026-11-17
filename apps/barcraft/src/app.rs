@@ -100,6 +100,8 @@ struct BarApp {
     /// Widths measured on the last frame, used to fit the app area and the full-width layout.
     widgets_width: f32,
     apps_scroll: f32,
+    widgets_scroll: f32,
+    widgets_rect: Rect,
     apps_rect: Rect,
 }
 
@@ -168,6 +170,8 @@ impl BarApp {
             styled_for: None,
             widgets_width: 0.0,
             apps_scroll: 0.0,
+            widgets_scroll: 0.0,
+            widgets_rect: Rect::NOTHING,
             apps_rect: Rect::NOTHING,
         };
         app.send_weather();
@@ -791,15 +795,24 @@ impl eframe::App for BarApp {
         } else {
             9.0
         };
-        let apps_max =
-            (max_inner - start_w - separator_w - self.widgets_width - 4.0 * gap).max(60.0);
-        // Scroll the app area with the mouse wheel when it doesn't all fit.
-        let wheel = ctx
-            .pointer_hover_pos()
-            .filter(|p| self.apps_rect.contains(*p))
-            .map(|_| ctx.input(|i| i.smooth_scroll_delta.y + i.smooth_scroll_delta.x))
-            .unwrap_or(0.0);
-        self.apps_scroll = (self.apps_scroll - wheel).max(0.0);
+        let app_cell = size.icon_size() + 16.0 + gap;
+        let min_apps = app_cell * 3.0;
+        let widgets_max = (max_inner - start_w - separator_w - min_apps - 4.0 * gap).max(120.0);
+        // Widgets get the room they asked for last frame (up to their maximum); apps get the rest.
+        let widgets_w = self.widgets_width.min(widgets_max);
+        let apps_max = (max_inner - start_w - separator_w - widgets_w - 4.0 * gap).max(60.0);
+        let apps_w = (items.len() as f32 * app_cell).min(apps_max);
+        // An anchored area only offers last frame's size to its contents, so a scroll area inside
+        // could never grow; asking for the whole width up front lets the bar widen in one frame.
+        let wanted_inner = (start_w + apps_w + separator_w + widgets_w + 4.0 * gap).min(max_inner);
+        // Scroll the app and widget areas with the mouse wheel when they don't all fit.
+        let wheel = ctx.input(|i| i.smooth_scroll_delta.y + i.smooth_scroll_delta.x);
+        let pointer = ctx.pointer_hover_pos();
+        if pointer.is_some_and(|p| self.apps_rect.contains(p)) {
+            self.apps_scroll = (self.apps_scroll - wheel).max(0.0);
+        }
+        let over_widgets = pointer.is_some_and(|p| self.widgets_rect.contains(p));
+        let mut widgets_wheel_used = false;
 
         let bar = egui::Area::new(Id::unique("barcraft-bar"))
             .anchor(anchor, offset)
@@ -813,6 +826,8 @@ impl eframe::App for BarApp {
                     .show(ui, |ui| {
                         if self.settings.layout == DockLayout::FullWidth {
                             ui.set_min_width(max_inner);
+                        } else {
+                            ui.set_min_width(wanted_inner);
                         }
                         ui.set_height(bar_h);
                         ui.horizontal(|ui| {
@@ -879,8 +894,7 @@ impl eframe::App for BarApp {
                             if self.settings.layout == DockLayout::FullWidth {
                                 // Push the widgets to the far end.
                                 let used = ui.min_rect().width();
-                                let spare =
-                                    max_inner - used - separator_w - self.widgets_width - 2.0 * gap;
+                                let spare = max_inner - used - separator_w - widgets_w - 2.0 * gap;
                                 ui.add_space(spare.max(0.0));
                             }
                             let (rect, _) =
@@ -892,33 +906,65 @@ impl eframe::App for BarApp {
                                 ],
                                 Stroke::new(1.0, draw::color(theme.bar_edge)),
                             );
-                            let widgets_left = ui.cursor().left();
+                            // Widgets, also scrolling sideways when they don't all fit; the apps
+                            // keep room for at least a few icons.
                             let widget_list = self.settings.widgets.clone();
-                            let mut wui = WidgetUi {
-                                theme,
-                                settings: &self.settings,
-                                readings: &readings,
-                                focus: &mut self.focus,
-                                stopwatch: &mut self.stopwatch,
-                                calendar: &mut self.calendar,
-                                now,
-                                instant,
-                                height: bar_h,
-                                actions: Vec::new(),
-                                preview: false,
-                                fast_repaint: false,
-                            };
-                            for kind in widget_list {
-                                wui.show(ui, kind);
-                            }
-                            widget_actions = wui.actions;
-                            fast_repaint = wui.fast_repaint;
-                            self.widgets_width = (ui.min_rect().right() - widgets_left).max(0.0);
+                            let settings = &self.settings;
+                            let focus = &mut self.focus;
+                            let stopwatch = &mut self.stopwatch;
+                            let calendar = &mut self.calendar;
+                            let wscroll = egui::ScrollArea::horizontal()
+                                .id_salt("barcraft-widgets")
+                                .max_width(widgets_max)
+                                .max_height(bar_h)
+                                .content_margin(0)
+                                .horizontal_scroll_offset(self.widgets_scroll)
+                                .scroll_bar_visibility(
+                                    egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                                )
+                                .show(ui, |ui| {
+                                    ui.horizontal_top(|ui| {
+                                        ui.spacing_mut().item_spacing = vec2(gap, 0.0);
+                                        let mut wui = WidgetUi {
+                                            theme,
+                                            settings,
+                                            readings: &readings,
+                                            focus,
+                                            stopwatch,
+                                            calendar,
+                                            now,
+                                            instant,
+                                            height: bar_h,
+                                            actions: Vec::new(),
+                                            preview: false,
+                                            fast_repaint: false,
+                                            wheel_used: false,
+                                        };
+                                        for kind in widget_list {
+                                            wui.show(ui, kind);
+                                        }
+                                        (wui.actions, wui.fast_repaint, wui.wheel_used)
+                                    })
+                                    .inner
+                                });
+                            let (actions, fast, wheel_used) = wscroll.inner;
+                            widget_actions = actions;
+                            fast_repaint = fast;
+                            widgets_wheel_used = wheel_used;
+                            self.widgets_scroll = wscroll.state.clamped_offset().x;
+                            self.widgets_rect = wscroll.inner_rect;
+                            // The widgets' full width, scrolled or not, so next frame can make room.
+                            self.widgets_width = wscroll.content_size.x;
                         });
                     });
                 ui.painter()
                     .set(background, bar_background(frame.response.rect, &theme));
             });
+        // The wheel scrolls the widgets unless a widget used it (the volume widget does).
+        if over_widgets && !widgets_wheel_used && wheel != 0.0 {
+            self.widgets_scroll = (self.widgets_scroll - wheel).max(0.0);
+            ctx.request_repaint();
+        }
 
         // The dock's own menu, from a right-click on the bar or on the Start button.
         let menu_id = Id::unique("barcraft-dock-menu");

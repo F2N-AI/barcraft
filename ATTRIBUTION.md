@@ -4,7 +4,7 @@ Every asset BarCraft ships or shows, and where it comes from.
 
 | Asset | Author | Source | Licence | Use |
 | --- | --- | --- | --- | --- |
-| Dock icons (Start grid, show desktop, speaker, battery, weather symbols, letter tiles) | BarCraft contributors | Drawn in code in `apps/barcraft/src/draw.rs` | MIT OR Apache-2.0 | Dock and widgets |
+| Dock icons (Start grid, show desktop, speaker, battery, weather symbols, letter tiles, rings and bars, tray chevron, bell, bin, microphone, upload/download arrows, media controls, analog clock face) | BarCraft contributors | Drawn in code in `apps/barcraft/src/draw.rs` | MIT OR Apache-2.0 | Dock, widgets and settings previews |
 | Ubuntu-Light font | Dalton Maag, Canonical | Bundled by egui's `default_fonts` feature (egui 0.37) | Ubuntu-font-1.0 | Interface text |
 | Hack font | Source Foundry | Bundled by egui's `default_fonts` feature (egui 0.37) | MIT | Monospaced numbers |
 | Noto Emoji | Google | Bundled by egui's `default_fonts` feature (egui 0.37) | OFL-1.1 | Symbol fallback |

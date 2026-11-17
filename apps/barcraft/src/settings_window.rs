@@ -295,7 +295,7 @@ fn taskbar(ui: &mut Ui, s: &mut Settings, c: &mut Changes) {
     );
     note(
         ui,
-        "While it is hidden, the System tray widget brings it up with its tray icons; it hides again when you move away.",
+        "While it is hidden, the System tray widget brings it up with its tray icons; it hides again once you click elsewhere.",
     );
 }
 
@@ -504,6 +504,7 @@ fn widgets(
                                     actions: Vec::new(),
                                     preview: true,
                                     fast_repaint: false,
+                                    wheel_used: false,
                                 };
                                 wui.show(&mut child, kind);
                                 ui.add_space(6.0);

@@ -13,7 +13,7 @@ Craft apps: free, local, no account, no telemetry.
 > not yet tried on Windows 10. Known gaps:
 >
 > - The tray icons aren't on the dock itself: the System tray widget brings the Windows taskbar
->   up with them, and it hides again when you move away.
+>   up with them, and it hides again once you click elsewhere.
 > - The dock sits on the main screen only; other screens keep their own taskbar.
 > - Only pinned shortcuts (`.lnk`) are imported from the Windows taskbar; pinned Store apps are
 >   not yet.

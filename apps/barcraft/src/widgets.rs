@@ -76,6 +76,9 @@ pub struct WidgetUi<'a> {
     pub actions: Vec<Action>,
     /// Drawing a preview in the settings gallery: no popups, no actions.
     pub preview: bool,
+    /// Set by a widget that used the mouse wheel itself (the volume widget), so the widget area
+    /// doesn't scroll as well.
+    pub wheel_used: bool,
     /// Set by widgets that change faster than once a second (a running stopwatch).
     pub fast_repaint: bool,
 }
@@ -600,6 +603,7 @@ impl WidgetUi<'_> {
             ink,
         );
         if resp.hovered() && !self.preview {
+            self.wheel_used = true;
             let scroll = ui.input(|i| i.smooth_scroll_delta.y + i.smooth_scroll_delta.x);
             if scroll.abs() > 0.5 {
                 let step = (scroll / 50.0).clamp(-0.1, 0.1);

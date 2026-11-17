@@ -19,10 +19,12 @@ our own words; names, looks and artwork are our own (see [AGENTS.md](../AGENTS.m
 
 ## Now (0.2)
 
+A tick means implemented; the pull request for each change says what was tried by hand.
+
 Dock
 - [x] Clicking the dock never takes focus from the app in use (needed for click-to-minimise).
 - [x] Reach the system tray while the taskbar is hidden: a tile that brings the Windows taskbar
-      up with its tray, and lets it hide again when the pointer leaves.
+      up with its tray, and lets it hide again once focus moves elsewhere.
 - [x] Never run off the screen: the app area scrolls sideways when it doesn't fit.
 - [x] Full-width layout option (apps on the left, widgets on the right) besides the centred bar.
 - [x] A cell behind every item, two-line cards for widgets, a soft glassy bar (gradient, edge
