@@ -186,8 +186,24 @@ fn general(ui: &mut Ui, s: &mut Settings, c: &mut Changes) {
     }
     if ui
         .checkbox(
-            &mut s.float_over_windows,
-            "Let windows use the space under the dock",
+            &mut s.auto_hide,
+            "Hide the dock until the pointer reaches the screen edge",
+        )
+        .on_hover_text(
+            "The dock slides out of sight when you leave it and comes back when the pointer touches the edge of the screen. Windows then use the whole screen.",
+        )
+        .changed()
+    {
+        c.any = true;
+        c.placement = true;
+    }
+    if ui
+        .add_enabled(
+            !s.auto_hide,
+            egui::Checkbox::new(
+                &mut s.float_over_windows,
+                "Let windows use the space under the dock",
+            ),
         )
         .on_hover_text(
             "Maximised windows reach the edge of the screen and the dock floats over them, as on a Mac. With a glass theme you then see them, blurred, through the bar.",

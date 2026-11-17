@@ -33,6 +33,7 @@ Dock
       its own (the dock window also holds the menus, so it can't carry the blur).
 - [x] A theme that follows Windows' light and dark mode (Frost and Smoke), now the default.
 - [x] Optionally let windows use the space under the dock, which then floats over them.
+- [x] Auto-hide: the dock slides away when you leave it and comes back at the screen edge.
 
 Settings
 - [x] Sidebar sections (General, Look, Taskbar, Apps, Widgets, Weather, Privacy, About).
@@ -59,7 +60,7 @@ Widgets (no account, no typing)
 - More looks for widgets (gauges, dot grids); the first ones are in: processor and memory rings,
   battery tile.
 - Drag to reorder and to pin; app groups; drag a file onto an app.
-- Auto-hiding dock; a dock on every screen.
+- A dock on every screen; bringing a hidden dock up with the Windows key.
 - Notes, to-dos and a launcher with search, each in its own window.
 - Window previews on hover; jump lists.
 - An installer (MSI) and signed releases with checksums, for the ArtCraft launcher.

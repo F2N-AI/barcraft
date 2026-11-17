@@ -229,6 +229,10 @@ pub struct Settings {
     /// the dock floats over them, as on a Mac. Off: the dock keeps its strip to itself.
     #[serde(deserialize_with = "lenient::value")]
     pub float_over_windows: bool,
+    /// The dock slides out of sight when not in use and comes back when the pointer reaches
+    /// the screen edge. Implies that windows use the space under it.
+    #[serde(deserialize_with = "lenient::value")]
+    pub auto_hide: bool,
     #[serde(deserialize_with = "lenient::list")]
     pub widgets: Vec<WidgetKind>,
     #[serde(deserialize_with = "lenient::list")]
@@ -259,6 +263,7 @@ impl Default for Settings {
             launch_at_startup: false,
             hide_for_fullscreen: true,
             float_over_windows: false,
+            auto_hide: false,
             widgets: WidgetKind::DEFAULT_SET.to_vec(),
             pinned: Vec::new(),
             pins_imported: false,
@@ -400,6 +405,13 @@ fn move_item<T>(items: &mut [T], is_it: impl Fn(&T) -> bool, delta: isize) {
         .min(items.len().saturating_sub(1));
     if to != from {
         items.swap(from, to);
+    }
+}
+
+impl Settings {
+    /// Whether the dock leaves its strip of the screen to other windows.
+    pub fn windows_under_dock(&self) -> bool {
+        self.float_over_windows || self.auto_hide
     }
 }
 

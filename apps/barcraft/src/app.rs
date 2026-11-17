@@ -38,6 +38,10 @@ fn bar_radius(theme: &Theme) -> u8 {
 }
 /// Room above (or below) the bar for menus, tooltips and the calendar, in points.
 const POPUP_SPACE: f32 = 460.0;
+/// Height of the strip along the screen edge that brings a hidden dock back, in points.
+const EDGE_STRIP: f32 = 2.0;
+/// How long an auto-hiding dock stays out after the pointer leaves it.
+const HIDE_DELAY: Duration = Duration::from_millis(700);
 /// How often to check whether the screen or its scale changed.
 const RECHECK: Duration = Duration::from_secs(2);
 
@@ -146,6 +150,11 @@ struct BarApp {
     window_px: Option<PxRect>,
     /// Set once making the backdrop failed, so it isn't retried every frame.
     backdrop_unavailable: bool,
+    /// Auto-hide: whether the dock is out, when the pointer was last on it, and where the bar
+    /// was drawn last frame.
+    revealed: bool,
+    last_inside: Instant,
+    last_bar_rect: Rect,
 }
 
 fn own_window(cc: &eframe::CreationContext<'_>) -> Option<WindowId> {
@@ -185,9 +194,9 @@ impl BarApp {
         }
         // With "windows under the dock" nothing is reserved, so no appbar is registered.
         let appbar = window
-            .filter(|_| !settings.float_over_windows)
+            .filter(|_| !settings.windows_under_dock())
             .and_then(AppBar::register);
-        if appbar.is_none() && !launch.preview && !settings.float_over_windows {
+        if appbar.is_none() && !launch.preview && !settings.windows_under_dock() {
             log::warn!("could not reserve screen space for the dock; windows may cover it");
         }
         if !settings.pins_imported {
@@ -230,6 +239,9 @@ impl BarApp {
             backdrop_at: None,
             window_px: None,
             backdrop_unavailable: false,
+            revealed: true,
+            last_inside: Instant::now(),
+            last_bar_rect: Rect::NOTHING,
         };
         app.send_weather();
         // Place the window before its first frame so it never shows in the wrong spot.
@@ -295,7 +307,7 @@ impl BarApp {
             edge: self.settings.edge,
             size: self.settings.size,
             scale,
-            float: self.settings.float_over_windows,
+            float: self.settings.windows_under_dock(),
         };
         if !force && self.placement == Some(want) {
             return;
@@ -344,6 +356,35 @@ impl BarApp {
         self.placement = Some(want);
         self.region = None;
         self.poller.send(Command::Watch(self.watch()));
+    }
+
+    /// How far out the dock is, from 0 (out of sight) to 1, animating between the two. Without
+    /// auto-hide it is always 1.
+    fn reveal_amount(&mut self, ctx: &egui::Context, auto_hide: bool) -> f32 {
+        if !auto_hide {
+            self.revealed = true;
+            return 1.0;
+        }
+        let now = Instant::now();
+        let screen = ctx.content_rect();
+        let pointer = ctx.pointer_hover_pos();
+        let at_edge = pointer.is_some_and(|p| match self.settings.edge {
+            DockEdge::Bottom => p.y >= screen.bottom() - EDGE_STRIP - 1.0,
+            DockEdge::Top => p.y <= screen.top() + EDGE_STRIP + 1.0,
+        });
+        let on_dock = pointer.is_some_and(|p| self.last_bar_rect.expand(12.0).contains(p));
+        let busy = ctx.any_popup_open() || Popup::is_any_open(ctx) || ctx.dragged_id().is_some();
+        if at_edge || (self.revealed && on_dock) || busy {
+            self.revealed = true;
+            self.last_inside = now;
+        } else if self.revealed && now.duration_since(self.last_inside) >= HIDE_DELAY {
+            self.revealed = false;
+        }
+        if self.revealed {
+            // Come back to check whether it is time to hide.
+            ctx.request_repaint_after(HIDE_DELAY);
+        }
+        ctx.animate_bool_with_time(Id::unique("barcraft-reveal"), self.revealed, 0.18)
     }
 
     /// The colours in use: the chosen theme, with "Follow Windows" resolved for the current mode.
@@ -932,10 +973,15 @@ impl eframe::App for BarApp {
 
         let size = self.settings.size;
         let bar_h = size.bar_height();
+        // Auto-hide: out while the pointer is on the dock (or at the screen edge) or a menu is
+        // open; back out of sight a moment after it leaves.
+        let auto_hide = self.settings.auto_hide && !self.preview;
+        let shown = self.reveal_amount(&ctx, auto_hide);
+        let slide = (1.0 - shown) * (bar_h + MARGIN + 6.0);
         let (anchor, offset) = match (self.preview, self.settings.edge) {
             (true, _) => (Align2::CENTER_CENTER, vec2(0.0, 0.0)),
-            (false, DockEdge::Bottom) => (Align2::CENTER_BOTTOM, vec2(0.0, -MARGIN)),
-            (false, DockEdge::Top) => (Align2::CENTER_TOP, vec2(0.0, MARGIN)),
+            (false, DockEdge::Bottom) => (Align2::CENTER_BOTTOM, vec2(0.0, -MARGIN + slide)),
+            (false, DockEdge::Top) => (Align2::CENTER_TOP, vec2(0.0, MARGIN - slide)),
         };
         let now = chrono::Local::now();
         let instant = Instant::now();
@@ -975,6 +1021,8 @@ impl eframe::App for BarApp {
 
         let bar = egui::Area::new(Id::unique("barcraft-bar"))
             .anchor(anchor, offset)
+            // Unconstrained, so auto-hide can slide the bar past the screen edge.
+            .constrain(false)
             .movable(false)
             .sense(Sense::click_and_drag())
             .show(&ctx, |ui| {
@@ -1121,10 +1169,11 @@ impl eframe::App for BarApp {
                 ui.painter()
                     .set(background, bar_background(frame.response.rect, &theme));
             });
+        self.last_bar_rect = bar.response.rect;
         self.update_backdrop(
             bar.response.rect,
             ctx.pixels_per_point(),
-            hidden_for_fullscreen,
+            hidden_for_fullscreen || shown <= 0.01,
         );
         // The wheel scrolls the widgets unless a widget used it (the volume widget does).
         if over_widgets && !widgets_wheel_used && wheel != 0.0 {
@@ -1219,6 +1268,20 @@ impl eframe::App for BarApp {
                 || bar.response.dragged();
             let region = if full {
                 None
+            } else if auto_hide && shown <= 0.01 {
+                // Hidden: keep only a strip along the screen edge, to notice the pointer there.
+                let screen = ctx.content_rect();
+                let strip = match self.settings.edge {
+                    DockEdge::Bottom => Rect::from_min_max(
+                        Pos2::new(screen.left(), screen.bottom() - EDGE_STRIP),
+                        screen.max,
+                    ),
+                    DockEdge::Top => Rect::from_min_max(
+                        screen.min,
+                        Pos2::new(screen.right(), screen.top() + EDGE_STRIP),
+                    ),
+                };
+                Some(to_px(strip, scale))
             } else {
                 Some(to_px(bar_rect.expand(8.0), scale))
             };

@@ -48,7 +48,8 @@ Craft apps: free, local, no account, no telemetry.
   The default, Follow Windows, switches between them with Windows' light and dark mode.
 - **Windows under the dock, if you like.** By default the dock keeps its strip of the screen to
   itself; turn on "Let windows use the space under the dock" and maximised windows reach the
-  edge with the dock floating over them, as on a Mac.
+  edge with the dock floating over them, as on a Mac. Or let it hide: it slides out of sight
+  when you leave it and comes back when the pointer touches the screen edge.
 
 ## The Windows taskbar always comes back
 

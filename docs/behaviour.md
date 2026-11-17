@@ -17,6 +17,9 @@ product's code, text or artwork.
   appear in Alt+Tab.
 - When the focused window covers the whole screen (a game, a full-screen video), the dock hides.
   It comes back when that window leaves full screen. This can be turned off.
+- Auto-hide (optional): 0.7 s after the pointer leaves the dock, with no menu open, the bar
+  slides past the screen edge; touching that edge brings it back. While hidden the dock keeps
+  only a 2-point strip along the edge, reserves no space, and hides its glass backdrop.
 
 ## The Windows taskbar
 
