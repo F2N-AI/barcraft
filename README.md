@@ -27,8 +27,8 @@ Craft apps: free, local, no account, no telemetry.
     With several windows, click to choose one.
   - Middle-click: open a new window.
   - Right-click: the app's windows, pin or unpin, move, close, end task.
-- **25 widgets, no account needed.** Each sits in its own cell, most as a two-line card in Inter;
-  processor, memory and battery also come as square ring or fill tiles.
+- **25 widgets, no account needed.** Each sits in its own card, most with two lines in Inter;
+  processor and memory also come as square rings, and the battery as a tile of liquid.
   - Time: clock, analog clock, date with a month calendar, day, month and year progress.
   - System: processor load with a one-minute chart, memory, network speed, disk space,
     battery, system tray, notifications, Recycle Bin, show desktop.
@@ -42,8 +42,9 @@ Craft apps: free, local, no account, no telemetry.
   it. When there are more apps than fit, the app area scrolls.
 - **Out of the way.** Clicking the dock never takes focus from your app, and the dock steps aside
   when a game or a video goes full screen.
-- **Themes and sizes.** Six themes of our own, three sizes, icons that grow a little under the
-  pointer. Two are glass: Smoke (dark) and Frost (light) let what's behind show through the bar,
+- **Themes and sizes.** Six themes of our own and three sizes. App icons sit free on the bar and
+  magnify under the pointer, pushing their neighbours aside, with the app's name above; how much
+  is up to you. Two are glass: Smoke (dark) and Frost (light) let what's behind show through the bar,
   blurred by Windows itself (rounded corners need Windows 11; Windows 10 keeps them square).
   The default, Follow Windows, switches between them with Windows' light and dark mode.
 - **Windows under the dock, if you like.** By default the dock keeps its strip of the screen to

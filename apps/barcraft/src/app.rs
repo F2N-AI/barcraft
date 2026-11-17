@@ -7,17 +7,19 @@ use std::time::{Duration, Instant};
 use barcraft_core::apps::{DockItem, PinnedApp, WindowRef, build_dock_items, normalize_path};
 use barcraft_core::clock::Stopwatch;
 use barcraft_core::focus::FocusTimer;
-use barcraft_core::{DockEdge, DockLayout, DockSize, IndicatorStyle, Settings, Theme, WidgetKind};
+use barcraft_core::{
+    DockEdge, DockLayout, DockSize, IndicatorStyle, Lens, Settings, Theme, WidgetKind,
+};
 use barcraft_win32::{AppBar, Backdrop, Edge, PxRect, WindowId};
 use egui::{
     Align2, Color32, CornerRadius, Id, Margin, Popup, PopupCloseBehavior, Pos2, Rect, RectAlign,
-    Sense, Shadow, Shape, Stroke, Ui, vec2,
+    Sense, Shadow, Shape, Stroke, Ui, pos2, vec2,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::poller::{Command, DockWatch, Poller};
 use crate::settings_window::{self, Changes, SettingsUi};
-use crate::widgets::{self, CELL_INSET, Readings, WidgetUi, cell_radius};
+use crate::widgets::{self, Readings, WidgetUi};
 use crate::{APP_NAME, draw, save_settings, taskbar};
 
 /// Gap between the bar and the screen edge, in points.
@@ -155,6 +157,10 @@ struct BarApp {
     revealed: bool,
     last_inside: Instant,
     last_bar_rect: Rect,
+    /// Magnification: where along the row the pointer last was, and the area where it keeps
+    /// the icons magnified (the app row, plus the room the grown icons take up).
+    lens_x: f32,
+    lens_zone: Rect,
 }
 
 fn own_window(cc: &eframe::CreationContext<'_>) -> Option<WindowId> {
@@ -242,6 +248,8 @@ impl BarApp {
             revealed: true,
             last_inside: Instant::now(),
             last_bar_rect: Rect::NOTHING,
+            lens_x: 0.0,
+            lens_zone: Rect::NOTHING,
         };
         app.send_weather();
         // Place the window before its first frame so it never shows in the wrong spot.
@@ -372,7 +380,9 @@ impl BarApp {
             DockEdge::Bottom => p.y >= screen.bottom() - EDGE_STRIP - 1.0,
             DockEdge::Top => p.y <= screen.top() + EDGE_STRIP + 1.0,
         });
-        let on_dock = pointer.is_some_and(|p| self.last_bar_rect.expand(12.0).contains(p));
+        let on_dock = pointer.is_some_and(|p| {
+            self.last_bar_rect.expand(12.0).contains(p) || self.lens_zone.contains(p)
+        });
         let busy = ctx.any_popup_open() || Popup::is_any_open(ctx) || ctx.dragged_id().is_some();
         if at_edge || (self.revealed && on_dock) || busy {
             self.revealed = true;
@@ -532,6 +542,8 @@ impl BarApp {
         }
     }
 
+    /// Lays out one app's cell at its normal size and handles clicks on it. The icon itself is
+    /// painted later, by [`paint_icons`], once the lens has said where and how big.
     #[allow(clippy::too_many_arguments)]
     fn app_button(
         &mut self,
@@ -540,9 +552,8 @@ impl BarApp {
         item: &DockItem,
         foreground: Option<WindowId>,
         pids: &HashMap<isize, u32>,
-        theme: &Theme,
         actions: &mut Vec<AppAction>,
-    ) {
+    ) -> IconDraw {
         let size = self.settings.size;
         let bar_h = size.bar_height();
         let icon_side = size.icon_size();
@@ -551,97 +562,16 @@ impl BarApp {
             .windows
             .iter()
             .any(|w| Some(WindowId(w.id)) == foreground);
-        // Every app sits in its own cell; the one in front and the one under the pointer stand out.
-        let fill = if resp.hovered() {
-            draw::color(theme.hover)
-        } else if is_front {
-            draw::color(theme.hover).gamma_multiply(0.7)
-        } else {
-            draw::color(theme.tile)
+        let draw = IconDraw {
+            cell: rect,
+            texture: self.icon(ctx, item),
+            name: item.name.clone(),
+            hovered: resp.hovered(),
+            pressed: resp.is_pointer_button_down_on(),
+            is_front,
+            running: item.is_running(),
+            windows: item.windows.len(),
         };
-        draw::cell(
-            ui.painter(),
-            rect.shrink2(vec2(1.0, CELL_INSET)),
-            cell_radius(theme),
-            fill,
-            theme,
-        );
-        // Icons grow a little under the pointer, and shrink a little while pressed.
-        let grow = if self.settings.magnify_icons {
-            ctx.animate_bool_with_time(resp.id.with("grow"), resp.hovered(), 0.12)
-        } else {
-            0.0
-        };
-        let press = if resp.is_pointer_button_down_on() {
-            0.92
-        } else {
-            1.0
-        };
-        let lift = match self.settings.edge {
-            DockEdge::Bottom => -2.0 * grow,
-            DockEdge::Top => 2.0 * grow,
-        };
-        let side = icon_side * (1.0 + 0.14 * grow) * press;
-        let icon_rect = Rect::from_center_size(rect.center() + vec2(0.0, lift), vec2(side, side));
-        match self.icon(ctx, item) {
-            Some(tex) => {
-                ui.painter().image(
-                    tex,
-                    icon_rect,
-                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                    Color32::WHITE,
-                );
-            }
-            None => draw::letter_tile(
-                ui.painter(),
-                icon_rect,
-                &item.name,
-                draw::color(theme.text),
-                draw::color(theme.hover),
-            ),
-        }
-        if item.is_running() {
-            let ink = draw::color(if is_front { theme.accent } else { theme.muted });
-            let y = match self.settings.edge {
-                DockEdge::Bottom => rect.bottom() - CELL_INSET - 3.5,
-                DockEdge::Top => rect.top() + CELL_INSET + 3.5,
-            };
-            let x = rect.center().x;
-            match self.settings.indicator {
-                IndicatorStyle::Dot => {
-                    ui.painter().circle_filled(Pos2::new(x, y), 2.0, ink);
-                }
-                IndicatorStyle::LargeDot => {
-                    ui.painter().circle_filled(Pos2::new(x, y), 3.0, ink);
-                }
-                IndicatorStyle::Line => {
-                    let w = if is_front { 18.0 } else { 10.0 };
-                    ui.painter().rect_filled(
-                        Rect::from_center_size(Pos2::new(x, y), vec2(w, 3.0)),
-                        1.5,
-                        ink,
-                    );
-                }
-            }
-            if item.windows.len() > 1 {
-                let badge = Pos2::new(rect.right() - 7.0, rect.top() + 9.0);
-                ui.painter()
-                    .circle_filled(badge, 6.5, draw::color(theme.bar));
-                ui.painter().text(
-                    badge,
-                    Align2::CENTER_CENTER,
-                    item.windows.len().min(9).to_string(),
-                    egui::FontId::proportional(9.5),
-                    draw::color(theme.text),
-                );
-            }
-        }
-
-        let tip = match item.windows.as_slice() {
-            [only] => format!("{}\n{}", item.name, only.title),
-            _ => item.name.clone(),
-        };
-        let resp = resp.on_hover_text(tip);
 
         let align = match self.settings.edge {
             DockEdge::Bottom => RectAlign::TOP,
@@ -777,6 +707,7 @@ impl BarApp {
                     }
                 }
             });
+        draw
     }
 
     fn apply_app_actions(&mut self, actions: Vec<AppAction>) {
@@ -856,6 +787,217 @@ impl BarApp {
 /// The bar's background: a soft shadow (not for glass), the theme's fill, a faint light on the
 /// upper half and a thin edge. With a glass theme the fill is see-through and the backdrop
 /// window underneath blurs the desktop.
+/// One app of the row as laid out this frame, to be painted once the lens is known.
+struct IconDraw {
+    /// The app's cell at its normal size, where clicks land.
+    cell: Rect,
+    texture: Option<egui::TextureId>,
+    name: String,
+    hovered: bool,
+    pressed: bool,
+    is_front: bool,
+    running: bool,
+    windows: usize,
+}
+
+/// What [`paint_icons`] needs to know about the row this frame.
+struct IconLook<'a> {
+    theme: &'a Theme,
+    edge: DockEdge,
+    indicator: IndicatorStyle,
+    icon_side: f32,
+    /// The whole bar, and the part of it the app row shows.
+    bar: Rect,
+    view: Rect,
+    lens: Lens,
+    lens_x: f32,
+    /// How far the lens is faded in, 0 to 1.
+    amount: f32,
+    /// Whether the pointer is over the row right now.
+    in_row: bool,
+    /// Spare room either side of the row that the outer icons may move into.
+    pad: f32,
+    magnify: bool,
+}
+
+/// Paints the app icons where the lens puts them, the one under the pointer on top and with its
+/// name above it.
+fn paint_icons(ctx: &egui::Context, painter: &egui::Painter, icons: &[IconDraw], look: &IconLook) {
+    let grow_room = look.icon_side * (look.lens.peak - 1.0).max(0.0) + 8.0;
+    let (top, bottom) = match look.edge {
+        DockEdge::Bottom => (look.bar.top() - grow_room, look.bar.bottom()),
+        DockEdge::Top => (look.bar.top(), look.bar.bottom() + grow_room),
+    };
+    let clip = Rect::from_min_max(
+        pos2(look.view.left() - look.pad, top),
+        pos2(look.view.right() + look.pad, bottom),
+    );
+    let painter = painter.with_clip_rect(clip);
+    // Past either end of the row the lens stays on the end icon, as if the pointer were on it.
+    let lens_x = match (icons.first(), icons.last()) {
+        (Some(first), Some(last)) => look.lens_x.clamp(
+            first.cell.center().x,
+            last.cell.center().x.max(first.cell.center().x),
+        ),
+        _ => look.lens_x,
+    };
+    // The app under the pointer: by the lens while it is on (its cell may be under a grown
+    // neighbour's picture otherwise), else by the cell.
+    let pointed = if look.in_row && look.magnify {
+        icons.iter().position(|i| {
+            let half_gap = 1.0;
+            (i.cell.left() - half_gap..i.cell.right() + half_gap).contains(&lens_x)
+        })
+    } else {
+        icons.iter().position(|i| i.hovered)
+    };
+    let order = (0..icons.len())
+        .filter(|&i| Some(i) != pointed)
+        .chain(pointed);
+    let mut name = None;
+    for i in order {
+        let Some(icon) = icons.get(i) else {
+            continue;
+        };
+        let x0 = look.lens.position(icon.cell.left(), lens_x, look.amount);
+        let x1 = look.lens.position(icon.cell.right(), lens_x, look.amount);
+        let cx = (x0 + x1) * 0.5;
+        let scale = look.lens.scale(icon.cell.center().x, lens_x, look.amount);
+        let press = if icon.pressed { 0.92 } else { 1.0 };
+        let side = look.icon_side * scale * press;
+        // Icons grow away from the screen edge, all standing on the same line.
+        let rect = match look.edge {
+            DockEdge::Bottom => {
+                let base = icon.cell.center().y + look.icon_side / 2.0;
+                Rect::from_min_max(
+                    pos2(cx - side / 2.0, base - side),
+                    pos2(cx + side / 2.0, base),
+                )
+            }
+            DockEdge::Top => {
+                let base = icon.cell.center().y - look.icon_side / 2.0;
+                Rect::from_min_max(
+                    pos2(cx - side / 2.0, base),
+                    pos2(cx + side / 2.0, base + side),
+                )
+            }
+        };
+        if Some(i) == pointed && !look.magnify {
+            // Without magnification a soft patch behind the icon is the only sign of the pointer.
+            let glow = Rect::from_center_size(icon.cell.center(), vec2(side + 10.0, side + 10.0));
+            painter.rect_filled(glow, 9, draw::color(look.theme.hover));
+        }
+        match icon.texture {
+            Some(tex) => {
+                painter.image(
+                    tex,
+                    rect,
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+            None => draw::letter_tile(
+                &painter,
+                rect,
+                &icon.name,
+                draw::color(look.theme.text),
+                draw::color(look.theme.hover),
+            ),
+        }
+        if icon.running {
+            let ink = draw::color(if icon.is_front {
+                look.theme.accent
+            } else {
+                look.theme.muted
+            });
+            // Halfway between the icon and the bar's edge.
+            let gap = (icon.cell.height() - look.icon_side) * 0.25;
+            let y = match look.edge {
+                DockEdge::Bottom => icon.cell.bottom() - gap,
+                DockEdge::Top => icon.cell.top() + gap,
+            };
+            match look.indicator {
+                IndicatorStyle::Dot => {
+                    painter.circle_filled(pos2(cx, y), 2.0, ink);
+                }
+                IndicatorStyle::LargeDot => {
+                    painter.circle_filled(pos2(cx, y), 3.0, ink);
+                }
+                IndicatorStyle::Line => {
+                    let w = if icon.is_front { 18.0 } else { 10.0 };
+                    painter.rect_filled(
+                        Rect::from_center_size(pos2(cx, y), vec2(w, 3.0)),
+                        1.5,
+                        ink,
+                    );
+                }
+            }
+            if icon.windows > 1 {
+                let badge = pos2(rect.right() - 2.0, rect.top() + 2.0);
+                painter.circle_filled(badge, 7.0, draw::color(look.theme.popup));
+                painter.text(
+                    badge,
+                    Align2::CENTER_CENTER,
+                    icon.windows.min(9).to_string(),
+                    crate::fonts::font(crate::fonts::Weight::Bold, 9.5),
+                    draw::color(look.theme.text),
+                );
+            }
+        }
+        if Some(i) == pointed {
+            name = Some((rect, icon.name.as_str()));
+        }
+    }
+    if let Some((rect, text)) = name
+        && !Popup::is_any_open(ctx)
+    {
+        paint_name(ctx, look, rect, text);
+    }
+}
+
+/// The app's name in a small label just past its icon, away from the screen edge.
+fn paint_name(ctx: &egui::Context, look: &IconLook, icon: Rect, text: &str) {
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        Id::unique("barcraft-app-name"),
+    ));
+    let galley = painter.layout_no_wrap(
+        text.to_owned(),
+        crate::fonts::font(crate::fonts::Weight::SemiBold, 12.5),
+        draw::color(look.theme.text),
+    );
+    let size = galley.size() + vec2(20.0, 10.0);
+    let y = match look.edge {
+        DockEdge::Bottom => icon.top() - 8.0 - size.y / 2.0,
+        DockEdge::Top => icon.bottom() + 8.0 + size.y / 2.0,
+    };
+    let mut rect = Rect::from_center_size(pos2(icon.center().x, y), size);
+    // Kept on screen at the ends of a full-width bar.
+    let screen = ctx.content_rect();
+    let dx = (screen.left() + 4.0 - rect.left()).max(0.0)
+        + (screen.right() - 4.0 - rect.right()).min(0.0);
+    rect = rect.translate(vec2(dx, 0.0));
+    let radius = CornerRadius::same(8);
+    painter.add(
+        Shadow {
+            offset: [0, 2],
+            blur: 10,
+            spread: 0,
+            color: Color32::from_black_alpha(60),
+        }
+        .as_shape(rect, radius),
+    );
+    painter.rect_filled(rect, radius, draw::color(look.theme.popup));
+    painter.rect_stroke(
+        rect,
+        radius,
+        Stroke::new(1.0, draw::color(look.theme.bar_edge)),
+        egui::StrokeKind::Inside,
+    );
+    let at = rect.center() - galley.size() / 2.0;
+    painter.galley(at, galley, draw::color(look.theme.text));
+}
+
 fn bar_background(rect: Rect, theme: &Theme) -> Shape {
     let r = bar_radius(theme);
     let radius = CornerRadius::same(r);
@@ -1007,9 +1149,36 @@ impl eframe::App for BarApp {
         let widgets_w = self.widgets_width.min(widgets_max);
         let apps_max = (max_inner - start_w - separator_w - widgets_w - 4.0 * gap).max(60.0);
         let apps_w = (items.len() as f32 * app_cell).min(apps_max);
+        let base_inner = start_w + apps_w + separator_w + widgets_w + 4.0 * gap;
+
+        // Magnification: a lens over the app row, faded in while the pointer is on it. The row
+        // is laid out at its normal size; the lens only moves and grows the icons as they are
+        // painted, and asks for spare room at both ends that depends on the fade alone, so the
+        // bar never changes width as the pointer moves along it.
+        let lens = Lens {
+            peak: 1.0 + self.settings.magnify_percent as f32 / 100.0,
+            reach: 2.5 * app_cell,
+        };
+        let lens_on = self.settings.magnify_icons;
+        // With too many apps to fit, or no room to widen, the end icons are clipped instead.
+        let lens_room = items.len() as f32 * app_cell <= apps_max
+            && base_inner + 2.0 * lens.spread(1.0) <= max_inner;
+        let lens_pointer = ctx.pointer_hover_pos();
+        let in_row = lens_on && lens_pointer.is_some_and(|p| self.lens_zone.contains(p));
+        if in_row && let Some(p) = lens_pointer {
+            self.lens_x = p.x;
+        }
+        let lens_amount = ctx.animate_bool_with_time(Id::unique("barcraft-lens"), in_row, 0.16);
+        let lens_pad = if lens_on && lens_room {
+            lens.spread(lens_amount)
+        } else {
+            0.0
+        };
+        let mut icons: Vec<IconDraw> = Vec::with_capacity(items.len());
+
         // An anchored area only offers last frame's size to its contents, so a scroll area inside
         // could never grow; asking for the whole width up front lets the bar widen in one frame.
-        let wanted_inner = (start_w + apps_w + separator_w + widgets_w + 4.0 * gap).min(max_inner);
+        let wanted_inner = base_inner.min(max_inner) + 2.0 * lens_pad;
         // Scroll the app and widget areas with the mouse wheel when they don't all fit.
         let wheel = ctx.input(|i| i.smooth_scroll_delta.y + i.smooth_scroll_delta.x);
         let pointer = ctx.pointer_hover_pos();
@@ -1042,19 +1211,24 @@ impl eframe::App for BarApp {
                             // Start menu.
                             let (rect, resp) =
                                 ui.allocate_exact_size(vec2(start_w, bar_h), Sense::click());
+                            // Drawn like an app icon: a rounded tile with the launcher on it.
                             let fill = if resp.hovered() {
                                 theme.hover
                             } else {
                                 theme.tile
                             };
-                            draw::cell(
-                                ui.painter(),
-                                rect.shrink2(vec2(1.0, CELL_INSET)),
-                                cell_radius(&theme),
+                            let icon = size.icon_size();
+                            let tile = Rect::from_center_size(rect.center(), vec2(icon, icon));
+                            ui.painter().rect_filled(
+                                tile,
+                                (icon * 0.26).round() as u8,
                                 draw::color(fill),
-                                &theme,
                             );
-                            draw::launcher(ui.painter(), rect, draw::color(theme.text));
+                            draw::launcher(
+                                ui.painter(),
+                                tile.expand(icon * 0.12),
+                                draw::color(theme.text),
+                            );
                             let resp =
                                 resp.on_hover_text("Start (right-click for the dock's menu)");
                             if resp.clicked() {
@@ -1064,7 +1238,9 @@ impl eframe::App for BarApp {
                                 open_menu_from_start = true;
                             }
 
-                            // Apps, scrolling sideways when there are too many to fit.
+                            // Apps, scrolling sideways when there are too many to fit, with room
+                            // either side for the lens to push the outer icons into.
+                            ui.add_space(lens_pad);
                             let scroll = egui::ScrollArea::horizontal()
                                 .id_salt("barcraft-apps")
                                 .max_width(apps_max)
@@ -1081,20 +1257,21 @@ impl eframe::App for BarApp {
                                     ui.horizontal_top(|ui| {
                                         ui.spacing_mut().item_spacing = vec2(gap, 0.0);
                                         for item in &items {
-                                            self.app_button(
+                                            let icon = self.app_button(
                                                 ui,
                                                 &ctx,
                                                 item,
                                                 foreground,
                                                 &pids,
-                                                &theme,
                                                 &mut app_actions,
                                             );
+                                            icons.push(icon);
                                         }
                                     });
                                 });
                             self.apps_scroll = scroll.state.clamped_offset().x;
                             self.apps_rect = scroll.inner_rect;
+                            ui.add_space(lens_pad);
 
                             if self.settings.widgets.is_empty() {
                                 self.widgets_width = 0.0;
@@ -1166,8 +1343,49 @@ impl eframe::App for BarApp {
                             self.widgets_width = wscroll.content_size.x;
                         });
                     });
+                let bar_rect = frame.response.rect;
                 ui.painter()
-                    .set(background, bar_background(frame.response.rect, &theme));
+                    .set(background, bar_background(bar_rect, &theme));
+
+                // The icons, painted over the finished row so the grown ones can reach past it.
+                let look = IconLook {
+                    theme: &theme,
+                    edge: self.settings.edge,
+                    indicator: self.settings.indicator,
+                    icon_side: size.icon_size(),
+                    bar: bar_rect,
+                    view: self.apps_rect,
+                    lens,
+                    lens_x: self.lens_x,
+                    amount: lens_amount,
+                    in_row,
+                    pad: lens_pad,
+                    magnify: lens_on,
+                };
+                paint_icons(&ctx, ui.painter(), &icons, &look);
+                // Where the pointer keeps the icons magnified next frame: the row and its spare
+                // room, from the screen edge to the top of the grown icons.
+                let reach_out =
+                    (look.icon_side * (lens.peak - 1.0) - (bar_h - look.icon_side) / 2.0).max(0.0)
+                        * lens_amount
+                        + 4.0;
+                let row = Rect::from_x_y_ranges(
+                    (self.apps_rect.left() - lens_pad)..=(self.apps_rect.right() + lens_pad),
+                    bar_rect.y_range(),
+                );
+                self.lens_zone = match self.settings.edge {
+                    DockEdge::Bottom => Rect::from_min_max(
+                        pos2(row.left(), row.top() - reach_out),
+                        pos2(row.right(), row.bottom() + MARGIN + 2.0),
+                    ),
+                    DockEdge::Top => Rect::from_min_max(
+                        pos2(row.left(), row.top() - MARGIN - 2.0),
+                        pos2(row.right(), row.bottom() + reach_out),
+                    ),
+                };
+                if !lens_on || self.apps_rect == Rect::NOTHING {
+                    self.lens_zone = Rect::NOTHING;
+                }
             });
         self.last_bar_rect = bar.response.rect;
         self.update_backdrop(
@@ -1261,8 +1479,9 @@ impl eframe::App for BarApp {
             let bar_rect = bar.response.rect;
             let hovering = ctx
                 .pointer_hover_pos()
-                .is_some_and(|p| bar_rect.expand(4.0).contains(p));
+                .is_some_and(|p| bar_rect.expand(4.0).contains(p) || self.lens_zone.contains(p));
             let full = hovering
+                || lens_amount > 0.001
                 || ctx.any_popup_open()
                 || Popup::is_any_open(&ctx)
                 || bar.response.dragged();

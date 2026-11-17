@@ -19,6 +19,7 @@ pub mod calendar;
 pub mod clock;
 pub mod cpu;
 pub mod focus;
+pub mod magnify;
 pub mod settings;
 pub mod theme;
 pub mod usage;
@@ -26,6 +27,7 @@ pub mod weather;
 pub mod widgets;
 
 pub use apps::{DockItem, PinnedApp, WindowRef, build_dock_items, normalize_path};
+pub use magnify::Lens;
 pub use settings::{
     DockEdge, DockLayout, DockSize, IndicatorStyle, Settings, TaskbarMode, TempUnit,
 };

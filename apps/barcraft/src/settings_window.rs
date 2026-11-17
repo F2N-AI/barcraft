@@ -309,9 +309,17 @@ fn look(ui: &mut Ui, s: &mut Settings, c: &mut Changes) {
     });
     row(ui, "Icons", |ui| {
         c.any |= ui
-            .checkbox(&mut s.magnify_icons, "Grow a little under the pointer")
+            .checkbox(&mut s.magnify_icons, "Magnify under the pointer")
             .changed();
     });
+    if s.magnify_icons {
+        row(ui, "Magnification", |ui| {
+            c.any |= ui
+                .add(egui::Slider::new(&mut s.magnify_percent, 10..=100).suffix(" %"))
+                .on_hover_text("How much bigger the icon under the pointer gets")
+                .changed();
+        });
+    }
     note(
         ui,
         "Tip: you can also drag the dock to the other half of the screen to move it there.",

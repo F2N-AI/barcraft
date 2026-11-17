@@ -208,9 +208,12 @@ pub struct Settings {
     pub size: DockSize,
     #[serde(deserialize_with = "lenient::value")]
     pub layout: DockLayout,
-    /// Icons grow a little under the pointer.
+    /// Icons near the pointer grow and push their neighbours aside.
     #[serde(deserialize_with = "lenient::value")]
     pub magnify_icons: bool,
+    /// How much bigger the icon under the pointer gets, in percent (10 to 100).
+    #[serde(deserialize_with = "lenient::value")]
+    pub magnify_percent: u32,
     #[serde(deserialize_with = "lenient::value")]
     pub theme: ThemeId,
     #[serde(deserialize_with = "lenient::value")]
@@ -255,6 +258,7 @@ impl Default for Settings {
             size: DockSize::Medium,
             layout: DockLayout::Centred,
             magnify_icons: true,
+            magnify_percent: DEFAULT_MAGNIFY_PERCENT,
             theme: ThemeId::FollowWindows,
             clock_24h: true,
             show_seconds: false,
@@ -281,6 +285,9 @@ pub enum SettingsError {
     #[error("the settings file is not valid: {0}")]
     Json(#[from] serde_json::Error),
 }
+
+/// How much the icon under the pointer grows unless the user picks otherwise, in percent.
+pub const DEFAULT_MAGNIFY_PERCENT: u32 = 60;
 
 /// The largest settings file we agree to read. A real one is a few kilobytes.
 const MAX_SETTINGS_BYTES: u64 = 4 * 1024 * 1024;
@@ -328,6 +335,11 @@ impl Settings {
             }
         });
         self.focus_minutes = self.focus_minutes.clamp(1, 180);
+        // An unreadable value reads as 0; anything else is kept within what the slider offers.
+        self.magnify_percent = match self.magnify_percent {
+            0 => DEFAULT_MAGNIFY_PERCENT,
+            p => p.clamp(10, 100),
+        };
         let mut keys = Vec::new();
         self.pinned.retain(|p| {
             let key = normalize(&p.path);
@@ -418,6 +430,23 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn magnification_stays_within_the_slider() {
+        for (raw, want) in [
+            ("\"lots\"", DEFAULT_MAGNIFY_PERCENT),
+            ("0", DEFAULT_MAGNIFY_PERCENT),
+            ("3", 10),
+            ("45", 45),
+            ("900", 100),
+        ] {
+            let json = format!(r#"{{"magnify_percent": {raw}}}"#);
+            let mut s: Settings = serde_json::from_str(&json).unwrap();
+            s.sanitize();
+            assert_eq!(s.magnify_percent, want, "{raw}");
+        }
+        assert_eq!(Settings::default().magnify_percent, DEFAULT_MAGNIFY_PERCENT);
+    }
 
     #[test]
     fn missing_file_gives_defaults() {

@@ -50,16 +50,26 @@ product's code, text or artwork.
 - Right-click menu: the app's windows, open a new window, pin or unpin, move left or right, close
   window(s), end task.
 - An app whose icon can't be read shows a tile with its first letter.
+- App icons have no cell behind them. Magnification (on by default, 10 to 100 %): the icon under
+  the pointer grows the most and its neighbours less the further away they are, growing away
+  from the screen edge and pushing the rest of the row aside. The point under the pointer never
+  moves, so a click lands on the icon drawn there. The bar widens by the same amount wherever the
+  pointer is along the row, only while the magnification fades in or out. Past the ends of the
+  row the end icon stays the largest. With magnification off, a soft patch marks the icon under
+  the pointer.
+- The name of the app under the pointer shows in a small label above its icon (below it on a
+  top dock), with no delay.
 
 ## Widgets
 
-- Every widget sits in its own rounded cell; most are two-line cards (a small upper-case label
+- Every widget sits in its own rounded card; most have two lines (a small upper-case label
   over a larger value), some are a single icon.
 - Time: clock (12/24-hour, optional seconds), analog clock, date (click for a month calendar,
   with arrows and a jump back to today), day, month and year progress.
 - System: processor load (with a one-minute chart), memory in use (ring), network speed
   (download, upload and a short chart), free space on the system drive, battery (hidden on PCs
-  without one), system tray (brings the hidden Windows taskbar up with its tray until the pointer
+  without one; as a tile, liquid fills it to the charge left, its surface waving while the
+  battery charges or the pointer is on it and still otherwise), system tray (brings the hidden Windows taskbar up with its tray until the pointer
   leaves it), notifications (opens the notification centre), Recycle Bin (click to open; its menu
   empties it after Windows' own confirmation), show desktop.
 - Sound and media: what's playing (from the system media session) with previous, play/pause and
@@ -77,7 +87,7 @@ product's code, text or artwork.
 - Theme (six of our own; the default, Follow Windows, uses Frost in light mode and Smoke in dark
   mode, following Windows as it changes; Smoke and Frost are glass: a separate, never-focused window under the
   bar asks Windows to blur the desktop behind it, with corners rounded by Windows 11), size
-  (three), layout, screen edge, open-app mark, icon growth, clock format.
+  (three), layout, screen edge, open-app mark, magnification and how much, clock format.
 - Taskbar choice, full-screen behaviour, start with Windows.
 - Widgets, focus timer length, weather place and units.
 - Pinned apps: reorder, remove, import again from the Windows taskbar.

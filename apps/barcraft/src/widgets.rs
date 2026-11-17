@@ -485,7 +485,8 @@ impl WidgetUi<'_> {
         });
     }
 
-    /// A square tile that fills from the bottom with the charge left.
+    /// A square tile filled with liquid up to the charge left. The liquid moves while the battery
+    /// charges or the pointer is on it, and rests otherwise.
     fn battery_tile(&mut self, ui: &mut Ui) {
         let Some(p) = self.readings.power.filter(|p| p.has_battery) else {
             return;
@@ -494,31 +495,42 @@ impl WidgetUi<'_> {
         let (cell, resp) = self.cell(ui, side + 2.0, Sense::hover());
         let fraction = p.percent.map(|v| f32::from(v) / 100.0).unwrap_or(0.0);
         let low = p.percent.is_some_and(|v| v <= 20) && !p.charging;
-        let level = if low { self.warn() } else { self.accent() };
-        let inner = cell.shrink(2.0);
-        let h = inner.height() * fraction.clamp(0.0, 1.0);
-        if h > 0.5 {
-            let r = (cell_radius(&self.theme) - 2.0).max(0.0) as u8;
-            let top = if fraction > 0.95 { r } else { 2 };
-            let fill_rect = Rect::from_min_max(pos2(inner.left(), inner.bottom() - h), inner.max);
-            ui.painter().rect_filled(
-                fill_rect,
-                egui::CornerRadius {
-                    nw: top,
-                    ne: top,
-                    sw: r,
-                    se: r,
-                },
-                level.gamma_multiply(0.42),
-            );
-            ui.painter().line_segment(
-                [
-                    pos2(fill_rect.left() + 3.0, fill_rect.top()),
-                    pos2(fill_rect.right() - 3.0, fill_rect.top()),
-                ],
-                egui::Stroke::new(1.5, level),
-            );
+        let colour = if low { self.warn() } else { self.accent() };
+
+        // The waves' phase lives in the UI's memory so it can stop and start without jumping.
+        let moving = (p.charging || resp.hovered()) && !self.preview;
+        let id = resp.id.with("liquid");
+        let time = ui.input(|i| i.time);
+        let (mut phase, last) = ui
+            .data(|d| d.get_temp::<(f32, f64)>(id))
+            .unwrap_or((0.8, time));
+        if moving {
+            phase = (phase + ((time - last) as f32).clamp(0.0, 0.25) * 2.4) % std::f32::consts::TAU;
+            if resp.hovered() {
+                ui.ctx().request_repaint();
+            } else {
+                self.fast_repaint = true;
+            }
         }
+        ui.data_mut(|d| d.insert_temp(id, (phase, time)));
+
+        let radius = cell_radius(&self.theme);
+        draw::liquid(
+            ui.painter(),
+            cell.shrink(1.0),
+            (radius - 1.0).max(0.0),
+            fraction,
+            phase,
+            colour.gamma_multiply(0.92),
+        );
+        draw::cell_edge(ui.painter(), cell, radius, &self.theme);
+
+        // The number sits on the liquid once the charge reaches it.
+        let ink = if fraction >= 0.5 {
+            draw::ink_on(colour)
+        } else {
+            self.ink()
+        };
         let value = p
             .percent
             .map(|v| v.to_string())
@@ -532,7 +544,7 @@ impl WidgetUi<'_> {
                 ui.painter(),
                 pos2(left + bolt_w * 0.4, cell.center().y),
                 self.s() * 0.95,
-                self.ink(),
+                ink,
             );
         }
         ui.painter().text(
@@ -540,7 +552,7 @@ impl WidgetUi<'_> {
             Align2::LEFT_CENTER,
             value,
             font,
-            self.ink(),
+            ink,
         );
         let state = if p.charging {
             "charging"

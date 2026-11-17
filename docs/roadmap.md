@@ -27,8 +27,9 @@ Dock
       up with its tray, and lets it hide again once focus moves elsewhere.
 - [x] Never run off the screen: the app area scrolls sideways when it doesn't fit.
 - [x] Full-width layout option (apps on the left, widgets on the right) besides the centred bar.
-- [x] A cell behind every item, two-line cards for widgets, a soft glassy bar (gradient, edge
-      light, shadow), icons that grow a little under the pointer.
+- [x] Two-line cards for widgets, a soft glassy bar (gradient, edge light, shadow).
+- [x] App icons free on the bar, magnified under the pointer with their neighbours moving aside,
+      and the app's name above the icon.
 - [x] Real glass: Smoke and Frost blur the desktop behind the bar through a backdrop window of
       its own (the dock window also holds the menus, so it can't carry the blur).
 - [x] A theme that follows Windows' light and dark mode (Frost and Smoke), now the default.
@@ -58,7 +59,7 @@ Widgets (no account, no typing)
 
 - Busiest apps (processor and memory), world clock, keyboard layout, light/dark switch.
 - More looks for widgets (gauges, dot grids); the first ones are in: processor and memory rings,
-  battery tile.
+  a battery tile of liquid.
 - Drag to reorder and to pin; app groups; drag a file onto an app.
 - A dock on every screen; bringing a hidden dock up with the Windows key.
 - Notes, to-dos and a launcher with search, each in its own window.

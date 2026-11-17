@@ -519,13 +519,10 @@ pub fn analog_clock(
     p.circle_filled(m, 2.0, ink);
 }
 
-/// A cell's background: its fill, a faint light over the upper half and a thin edge, so cells
-/// read as separate tiles on the bar.
-pub fn cell(p: &Painter, rect: Rect, radius: f32, fill: Color32, theme: &barcraft_core::Theme) {
-    let r = radius.round().clamp(0.0, 255.0) as u8;
-    p.rect_filled(rect, r, fill);
+/// The light over a cell's upper half and the colour of its thin edge.
+fn cell_light(theme: &barcraft_core::Theme) -> (Color32, Color32) {
     // On glass, cells catch the light: a brighter edge reads better over a blurred desktop.
-    let (sheen, edge) = match (theme.glass, theme.dark) {
+    match (theme.glass, theme.dark) {
         (true, true) => (Color32::from_white_alpha(10), Color32::from_white_alpha(34)),
         (true, false) => (
             Color32::from_white_alpha(60),
@@ -533,7 +530,117 @@ pub fn cell(p: &Painter, rect: Rect, radius: f32, fill: Color32, theme: &barcraf
         ),
         (false, true) => (Color32::from_white_alpha(7), Color32::from_white_alpha(22)),
         (false, false) => (Color32::from_white_alpha(70), Color32::from_black_alpha(26)),
+    }
+}
+
+/// Just the thin edge of a cell, to draw again over something painted inside it.
+pub fn cell_edge(p: &Painter, rect: Rect, radius: f32, theme: &barcraft_core::Theme) {
+    let r = radius.round().clamp(0.0, 255.0) as u8;
+    let (_, edge) = cell_light(theme);
+    p.rect_stroke(rect, r, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+}
+
+/// Black or white, whichever reads better on `c`.
+pub fn ink_on(c: Color32) -> Color32 {
+    let [r, g, b, _] = c.to_srgba_unmultiplied();
+    let lum = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
+    if lum > 150.0 {
+        Color32::from_rgb(20, 22, 27)
+    } else {
+        Color32::WHITE
+    }
+}
+
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let ch = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
+    Color32::from_rgba_premultiplied(
+        ch(a.r(), b.r()),
+        ch(a.g(), b.g()),
+        ch(a.b(), b.b()),
+        ch(a.a(), b.a()),
+    )
+}
+
+/// Liquid filling a rounded rectangle to `level` (0 to 1), its surface a gentle double wave.
+/// `phase` (radians) moves the waves along; keep it still for a liquid at rest.
+pub fn liquid(p: &Painter, rect: Rect, radius: f32, level: f32, phase: f32, c: Color32) {
+    let level = if level.is_finite() {
+        level.clamp(0.0, 1.0)
+    } else {
+        0.0
     };
+    let (w, h) = (rect.width(), rect.height());
+    if level <= 0.0 || w <= 1.0 || h <= 1.0 {
+        return;
+    }
+    let r = radius.clamp(0.0, w.min(h) / 2.0);
+    // The rounded rectangle's top and bottom at `x`.
+    let bounds = |x: f32| -> (f32, f32) {
+        let inset = if x < rect.left() + r {
+            rect.left() + r - x
+        } else if x > rect.right() - r {
+            x - (rect.right() - r)
+        } else {
+            0.0
+        };
+        let lift = r - (r * r - inset.min(r).powi(2)).max(0.0).sqrt();
+        (rect.top() + lift, rect.bottom() - lift)
+    };
+    let surface = rect.bottom() - h * level;
+    // Smaller waves near empty and full, so they never spill out of the shape.
+    let room = (surface - rect.top()).min(rect.bottom() - surface);
+    let amp = (h * 0.07).min(2.4).min(room.max(0.0));
+    let top_colour = mix(c, Color32::WHITE, 0.28);
+    let steps = 36;
+    // The paler wave behind, a little higher and out of step, then the main one.
+    let waves = [
+        (
+            amp * 0.85,
+            phase + 2.1,
+            0.85,
+            top_colour.gamma_multiply(0.45),
+            0.45,
+        ),
+        (amp, phase, 1.15, top_colour, 1.0),
+    ];
+    for (k, &(a, ph, length, top_c, alpha)) in waves.iter().enumerate() {
+        let mean = if k == 0 { surface - a * 0.6 } else { surface };
+        let bottom_c = c.gamma_multiply(alpha);
+        let mut mesh = egui::Mesh::default();
+        let mut crest = Vec::with_capacity(steps + 1);
+        for i in 0..=steps {
+            let x = rect.left() + w * i as f32 / steps as f32;
+            let (lo, hi) = bounds(x);
+            let wave = mean + a * (TAU * (x - rect.left()) / (w * length) + ph).sin();
+            let y_top = wave.max(lo).min(hi);
+            let shade = ((y_top - rect.top()) / h).clamp(0.0, 1.0);
+            mesh.colored_vertex(pos2(x, y_top), mix(top_c, bottom_c, shade * 0.5));
+            mesh.colored_vertex(pos2(x, hi), bottom_c);
+            crest.push(pos2(x, y_top));
+            if i > 0 {
+                let j = (2 * i) as u32;
+                mesh.add_triangle(j - 2, j - 1, j);
+                mesh.add_triangle(j - 1, j + 1, j);
+            }
+        }
+        p.add(Shape::mesh(mesh));
+        // A bright line along the main surface; it also smooths the wave's edge.
+        if k == 1 && level < 0.97 {
+            p.add(Shape::line(
+                crest,
+                Stroke::new(1.2, mix(top_c, Color32::WHITE, 0.35)),
+            ));
+        }
+    }
+}
+
+/// A cell's background: its fill, a faint light over the upper half and a thin edge, so cells
+/// read as separate tiles on the bar.
+pub fn cell(p: &Painter, rect: Rect, radius: f32, fill: Color32, theme: &barcraft_core::Theme) {
+    let r = radius.round().clamp(0.0, 255.0) as u8;
+    p.rect_filled(rect, r, fill);
+    let (sheen, edge) = cell_light(theme);
     let upper = Rect::from_min_max(rect.min, pos2(rect.right(), rect.center().y));
     p.rect_filled(
         upper,
