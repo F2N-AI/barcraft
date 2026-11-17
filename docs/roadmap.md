@@ -52,12 +52,14 @@ Widgets (no account, no typing)
 ## Next
 
 - Busiest apps (processor and memory), world clock, keyboard layout, light/dark switch.
-- Alternative looks for battery, processor and memory (rings, gauges).
+- More looks for widgets (gauges, dot grids); the first ones are in: processor and memory rings,
+  battery tile.
 - Drag to reorder and to pin; app groups; drag a file onto an app.
 - Auto-hiding dock; a dock on every screen.
 - Notes, to-dos and a launcher with search, each in its own window.
 - Window previews on hover; jump lists.
-- Real background blur behind the bar (needs menus in their own windows first).
+- Real background blur behind the bar: the biggest visual difference left. It needs the bar's
+  backdrop in a window of its own, since the dock window also holds the menus.
 - An installer (MSI) and signed releases with checksums, for the ArtCraft launcher.
 
 ## Not planned

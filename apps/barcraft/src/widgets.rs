@@ -20,6 +20,7 @@ use egui::{
 };
 
 use crate::draw::{self, MediaGlyph};
+use crate::fonts::{self, Weight};
 use crate::poller::WeatherState;
 
 /// Horizontal padding inside a card.
@@ -99,11 +100,11 @@ impl WidgetUi<'_> {
     }
 
     fn label_font(&self) -> FontId {
-        FontId::proportional(self.s() * 0.7)
+        fonts::font(Weight::SemiBold, self.s() * 0.66)
     }
 
     fn value_font(&self) -> FontId {
-        FontId::proportional(self.s() * 1.1)
+        fonts::font(Weight::Bold, self.s() * 1.1)
     }
 
     fn ink(&self) -> Color32 {
@@ -146,8 +147,13 @@ impl WidgetUi<'_> {
         } else {
             self.theme.tile
         };
-        ui.painter()
-            .rect_filled(cell, CELL_RADIUS, draw::color(fill));
+        draw::cell(
+            ui.painter(),
+            cell,
+            CELL_RADIUS,
+            draw::color(fill),
+            &self.theme,
+        );
         (cell, resp)
     }
 
@@ -188,22 +194,43 @@ impl WidgetUi<'_> {
         extra: f32,
         sense: Sense,
     ) -> (Rect, Rect, Response) {
-        self.card_with(ui, label, value, extra, sense, self.muted())
+        self.card_with(ui, label, value, None, extra, sense, self.muted())
     }
 
-    /// Like [`Self::card`], with the label in `label_color`.
+    /// A card for a value that changes all the time: it is as wide as `widest` would need, so the
+    /// bar doesn't shift each time the number does.
+    fn card_steady(
+        &self,
+        ui: &mut Ui,
+        label: &str,
+        value: &str,
+        widest: &str,
+        extra: f32,
+        sense: Sense,
+    ) -> (Rect, Rect, Response) {
+        self.card_with(ui, label, value, Some(widest), extra, sense, self.muted())
+    }
+
+    /// Like [`Self::card`], with the label in `label_color` and an optional widest value.
+    #[allow(clippy::too_many_arguments)]
     fn card_with(
         &self,
         ui: &mut Ui,
         label: &str,
         value: &str,
+        widest: Option<&str>,
         extra: f32,
         sense: Sense,
         label_color: Color32,
     ) -> (Rect, Rect, Response) {
+        let value_w = self.text_width(ui, value, self.value_font()).max(
+            widest
+                .map(|w| self.text_width(ui, w, self.value_font()))
+                .unwrap_or(0.0),
+        );
         let text_w = self
             .text_width(ui, &label.to_uppercase(), self.label_font())
-            .max(self.text_width(ui, value, self.value_font()));
+            .max(value_w);
         let width = text_w + 2.0 * PAD + extra;
         let (cell, resp) = self.cell(ui, width, sense);
         let extra_rect = Rect::from_min_max(pos2(cell.right() - extra, cell.top()), cell.max);
@@ -251,6 +278,23 @@ impl WidgetUi<'_> {
             }
             WidgetKind::Cpu => self.cpu(ui),
             WidgetKind::Memory => self.memory(ui),
+            WidgetKind::CpuRing => {
+                let load = self.readings.cpu.latest();
+                self.ring_tile(ui, "CPU", load, "Processor load".to_owned());
+            }
+            WidgetKind::MemoryRing => {
+                let Some(m) = self.readings.memory else {
+                    return;
+                };
+                let gib = |b: u64| b as f64 / (1024.0 * 1024.0 * 1024.0);
+                let tip = format!(
+                    "Memory: {:.1} GB of {:.1} GB in use",
+                    gib(m.total_bytes.saturating_sub(m.available_bytes)),
+                    gib(m.total_bytes)
+                );
+                self.ring_tile(ui, "RAM", Some(m.load_percent as f32 / 100.0), tip);
+            }
+            WidgetKind::BatteryTile => self.battery_tile(ui),
             WidgetKind::Network => self.network(ui),
             WidgetKind::Storage => self.storage(ui),
             WidgetKind::Battery => self.battery(ui),
@@ -292,13 +336,19 @@ impl WidgetUi<'_> {
                 (time, Some(if pm { "PM" } else { "AM" }))
             }
         };
-        let font = FontId::proportional(self.s() * 1.35);
+        let font = fonts::font(Weight::Bold, self.s() * 1.4);
         let small = self.label_font();
         let suffix_w = suffix
             .map(|s| self.text_width(ui, s, small.clone()) + 3.0)
             .unwrap_or(0.0);
         let time_w = self.text_width(ui, &time, font.clone());
-        let (cell, resp) = self.cell(ui, time_w + suffix_w + 2.0 * PAD + 4.0, Sense::hover());
+        // The cell is as wide as the widest time of this format, so the bar never shifts.
+        let widest = match (self.settings.clock_24h, self.settings.show_seconds) {
+            (true, false) | (false, false) => "88:88",
+            (true, true) | (false, true) => "88:88:88",
+        };
+        let widest_w = self.text_width(ui, widest, font.clone()).max(time_w);
+        let (cell, resp) = self.cell(ui, widest_w + suffix_w + 2.0 * PAD + 4.0, Sense::hover());
         let left = cell.center().x - (time_w + suffix_w) / 2.0;
         ui.painter().text(
             pos2(left, cell.center().y),
@@ -337,7 +387,15 @@ impl WidgetUi<'_> {
         let weekday = self.now.format("%A").to_string();
         let value = self.now.format("%-d %b").to_string();
         // The weekday is the eye-catcher, so it takes the accent colour.
-        let (_, _, resp) = self.card_with(ui, &weekday, &value, 0.0, Sense::click(), self.accent());
+        let (_, _, resp) = self.card_with(
+            ui,
+            &weekday,
+            &value,
+            Some("30 Sep"),
+            0.0,
+            Sense::click(),
+            self.accent(),
+        );
         let resp = resp.on_hover_text("Show the calendar");
         if self.preview {
             return;
@@ -358,7 +416,7 @@ impl WidgetUi<'_> {
 
     fn progress(&mut self, ui: &mut Ui, label: &str, fraction: f32) {
         let value = format!("{:.0}%", fraction * 100.0);
-        let (cell, _, resp) = self.card(ui, label, &value, 0.0, Sense::hover());
+        let (cell, _, resp) = self.card_steady(ui, label, &value, "100%", 0.0, Sense::hover());
         self.bottom_bar(ui, cell, fraction, self.accent());
         resp.on_hover_text(format!("{:.1}% of {} has gone by", fraction * 100.0, label));
     }
@@ -368,7 +426,7 @@ impl WidgetUi<'_> {
         let value = load
             .map(|l| format!("{:.0}%", l * 100.0))
             .unwrap_or_else(|| "…".into());
-        let (_, extra, resp) = self.card(ui, "CPU", &value, 52.0, Sense::hover());
+        let (_, extra, resp) = self.card_steady(ui, "CPU", &value, "100%", 52.0, Sense::hover());
         let values: Vec<f32> = self.readings.cpu.iter().collect();
         let busy = load.unwrap_or(0.0) > 0.85;
         let line = if busy { self.warn() } else { self.accent() };
@@ -382,13 +440,124 @@ impl WidgetUi<'_> {
         resp.on_hover_text("Processor load over the last minute");
     }
 
+    /// A square tile: a ring filled to `fraction`, the percentage inside it and a small label
+    /// under the number.
+    fn ring_tile(&mut self, ui: &mut Ui, label: &str, fraction: Option<f32>, tip: String) {
+        let side = self.height - 2.0 * CELL_INSET;
+        let (cell, resp) = self.cell(ui, side + 2.0, Sense::hover());
+        let center = cell.center();
+        let radius = cell.height() * 0.37;
+        let f = fraction.unwrap_or(0.0);
+        let fill = if f > 0.85 { self.warn() } else { self.accent() };
+        draw::ring(
+            ui.painter(),
+            center,
+            radius,
+            f,
+            3.2,
+            draw::color(self.theme.hover),
+            fill,
+        );
+        let value = fraction
+            .map(|f| format!("{:.0}", f * 100.0))
+            .unwrap_or_else(|| "…".into());
+        ui.painter().text(
+            center - vec2(0.0, radius * 0.14),
+            Align2::CENTER_CENTER,
+            value,
+            fonts::font(Weight::Bold, self.s() * 0.98),
+            self.ink(),
+        );
+        ui.painter().text(
+            center + vec2(0.0, radius * 0.55),
+            Align2::CENTER_CENTER,
+            label,
+            fonts::font(Weight::SemiBold, self.s() * 0.5),
+            self.muted(),
+        );
+        resp.on_hover_text(match fraction {
+            Some(f) => format!("{tip}: {:.0}%", f * 100.0),
+            None => tip,
+        });
+    }
+
+    /// A square tile that fills from the bottom with the charge left.
+    fn battery_tile(&mut self, ui: &mut Ui) {
+        let Some(p) = self.readings.power.filter(|p| p.has_battery) else {
+            return;
+        };
+        let side = self.height - 2.0 * CELL_INSET;
+        let (cell, resp) = self.cell(ui, side + 2.0, Sense::hover());
+        let fraction = p.percent.map(|v| f32::from(v) / 100.0).unwrap_or(0.0);
+        let low = p.percent.is_some_and(|v| v <= 20) && !p.charging;
+        let level = if low { self.warn() } else { self.accent() };
+        let inner = cell.shrink(2.0);
+        let h = inner.height() * fraction.clamp(0.0, 1.0);
+        if h > 0.5 {
+            let r = (CELL_RADIUS - 2.0).max(0.0) as u8;
+            let top = if fraction > 0.95 { r } else { 2 };
+            let fill_rect = Rect::from_min_max(pos2(inner.left(), inner.bottom() - h), inner.max);
+            ui.painter().rect_filled(
+                fill_rect,
+                egui::CornerRadius {
+                    nw: top,
+                    ne: top,
+                    sw: r,
+                    se: r,
+                },
+                level.gamma_multiply(0.42),
+            );
+            ui.painter().line_segment(
+                [
+                    pos2(fill_rect.left() + 3.0, fill_rect.top()),
+                    pos2(fill_rect.right() - 3.0, fill_rect.top()),
+                ],
+                egui::Stroke::new(1.5, level),
+            );
+        }
+        let value = p
+            .percent
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "?".into());
+        let font = fonts::font(Weight::Bold, self.s() * 1.05);
+        let value_w = self.text_width(ui, &value, font.clone());
+        let bolt_w = if p.charging { self.s() * 0.62 } else { 0.0 };
+        let left = cell.center().x - (value_w + bolt_w) / 2.0;
+        if p.charging {
+            draw::bolt(
+                ui.painter(),
+                pos2(left + bolt_w * 0.4, cell.center().y),
+                self.s() * 0.95,
+                self.ink(),
+            );
+        }
+        ui.painter().text(
+            pos2(left + bolt_w, cell.center().y),
+            Align2::LEFT_CENTER,
+            value,
+            font,
+            self.ink(),
+        );
+        let state = if p.charging {
+            "charging"
+        } else if p.on_mains {
+            "plugged in"
+        } else {
+            "on battery"
+        };
+        resp.on_hover_text(format!(
+            "Battery {}, {state}",
+            p.percent.map(|v| format!("{v}%")).unwrap_or_default()
+        ));
+    }
+
     fn memory(&mut self, ui: &mut Ui) {
         let Some(m) = self.readings.memory else {
             return;
         };
         let value = format!("{}%", m.load_percent);
         let ring = self.height * 0.62;
-        let (_, extra, resp) = self.card(ui, "Memory", &value, ring, Sense::hover());
+        let (_, extra, resp) = self.card_steady(ui, "Memory", &value, "100%", ring, Sense::hover());
         let fill = if m.load_percent >= 90 {
             self.warn()
         } else {
@@ -471,7 +640,14 @@ impl WidgetUi<'_> {
         };
         let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
         let value = format!("{} free", format_bytes(d.free));
-        let (cell, _, resp) = self.card(ui, &format!("Disk {drive}"), &value, 0.0, Sense::hover());
+        let (cell, _, resp) = self.card_steady(
+            ui,
+            &format!("Disk {drive}"),
+            &value,
+            "888 GB free",
+            0.0,
+            Sense::hover(),
+        );
         let used = 1.0 - d.free as f32 / d.total.max(1) as f32;
         let fill = if used > 0.9 {
             self.warn()
@@ -502,7 +678,7 @@ impl WidgetUi<'_> {
             "Battery"
         };
         let icon = self.height * 0.72;
-        let (_, extra, resp) = self.card(ui, label, &value, icon, Sense::hover());
+        let (_, extra, resp) = self.card_steady(ui, label, &value, "100%", icon, Sense::hover());
         let fraction = p.percent.map(|v| f32::from(v) / 100.0).unwrap_or(0.0);
         let low = p.percent.is_some_and(|v| v <= 15) && !p.charging;
         let fill = if low { self.warn() } else { self.accent() };
@@ -593,7 +769,7 @@ impl WidgetUi<'_> {
         let value = format!("{:.0}%", v.level * 100.0);
         let icon = self.height * 0.62;
         let label = if v.muted { "Muted" } else { "Sound" };
-        let (_, extra, resp) = self.card(ui, label, &value, icon, Sense::click());
+        let (_, extra, resp) = self.card_steady(ui, label, &value, "100%", icon, Sense::click());
         let ink = if v.muted { self.muted() } else { self.ink() };
         draw::speaker(
             ui.painter(),
@@ -704,8 +880,14 @@ impl WidgetUi<'_> {
             FocusPhase::Paused => "Paused",
             FocusPhase::Finished => "Time's up",
         };
-        let (cell, _, resp) =
-            self.card(ui, label, &format_countdown(remaining), 0.0, Sense::click());
+        let (cell, _, resp) = self.card_steady(
+            ui,
+            label,
+            &format_countdown(remaining),
+            "00:00",
+            0.0,
+            Sense::click(),
+        );
         let total = self.focus.length().as_secs_f32().max(1.0);
         let done = 1.0 - remaining.as_secs_f32() / total;
         self.bottom_bar(ui, cell, done, self.accent());
@@ -734,10 +916,11 @@ impl WidgetUi<'_> {
     fn stopwatch(&mut self, ui: &mut Ui) {
         let elapsed = self.stopwatch.elapsed(self.instant);
         let running = self.stopwatch.is_running();
-        let (_, _, resp) = self.card(
+        let (_, _, resp) = self.card_steady(
             ui,
             "Stopwatch",
             &format_stopwatch(elapsed),
+            "88:88.8",
             0.0,
             Sense::click(),
         );
@@ -758,7 +941,8 @@ impl WidgetUi<'_> {
 
     fn time_on_pc(&mut self, ui: &mut Ui) {
         let value = format_duration(self.readings.usage_total);
-        let (_, _, resp) = self.card(ui, "Today on PC", &value, 0.0, Sense::click());
+        let (_, _, resp) =
+            self.card_steady(ui, "Today on PC", &value, "18h 88m", 0.0, Sense::click());
         let resp =
             resp.on_hover_text("Time in front of the PC today. Click for the apps you used most.");
         if self.preview {
@@ -839,7 +1023,7 @@ impl WidgetUi<'_> {
             ),
         };
         let icon = self.height * 0.72;
-        let (_, extra, resp) = self.card(ui, &label, &value, icon, Sense::click());
+        let (_, extra, resp) = self.card_steady(ui, &label, &value, "-88°", icon, Sense::click());
         draw::sky(
             ui.painter(),
             extra.translate(vec2(-6.0, 0.0)),
@@ -998,7 +1182,7 @@ fn month_view(ui: &mut Ui, shown: &mut Option<(i32, u32)>, today: (i32, u32, u32
                                 rect.center(),
                                 Align2::CENTER_CENTER,
                                 d.to_string(),
-                                FontId::proportional(13.0),
+                                fonts::font(Weight::Regular, 13.0),
                                 ink,
                             );
                         }

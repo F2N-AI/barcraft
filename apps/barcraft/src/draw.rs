@@ -518,3 +518,44 @@ pub fn analog_clock(
     }
     p.circle_filled(m, 2.0, ink);
 }
+
+/// A cell's background: its fill, a faint light over the upper half and a thin edge, so cells
+/// read as separate tiles on the bar.
+pub fn cell(p: &Painter, rect: Rect, radius: f32, fill: Color32, theme: &barcraft_core::Theme) {
+    let r = radius.round().clamp(0.0, 255.0) as u8;
+    p.rect_filled(rect, r, fill);
+    let (sheen, edge) = if theme.dark {
+        (Color32::from_white_alpha(7), Color32::from_white_alpha(22))
+    } else {
+        (Color32::from_white_alpha(70), Color32::from_black_alpha(26))
+    };
+    let upper = Rect::from_min_max(rect.min, pos2(rect.right(), rect.center().y));
+    p.rect_filled(
+        upper,
+        egui::CornerRadius {
+            nw: r,
+            ne: r,
+            sw: 0,
+            se: 0,
+        },
+        sheen,
+    );
+    p.rect_stroke(rect, r, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+}
+
+/// A lightning bolt, for charging.
+pub fn bolt(p: &Painter, center: Pos2, height: f32, c: Color32) {
+    let h = height / 2.0;
+    let upper = vec![
+        pos2(center.x + h * 0.25, center.y - h),
+        pos2(center.x - h * 0.45, center.y + h * 0.12),
+        pos2(center.x + h * 0.05, center.y + h * 0.12),
+    ];
+    let lower = vec![
+        pos2(center.x - h * 0.05, center.y - h * 0.12),
+        pos2(center.x + h * 0.45, center.y - h * 0.12),
+        pos2(center.x - h * 0.25, center.y + h),
+    ];
+    p.add(Shape::convex_polygon(upper, c, Stroke::NONE));
+    p.add(Shape::convex_polygon(lower, c, Stroke::NONE));
+}

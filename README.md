@@ -27,7 +27,8 @@ Craft apps: free, local, no account, no telemetry.
     With several windows, click to choose one.
   - Middle-click: open a new window.
   - Right-click: the app's windows, pin or unpin, move, close, end task.
-- **22 widgets, no account needed.** Each sits in its own cell, most as a two-line card.
+- **25 widgets, no account needed.** Each sits in its own cell, most as a two-line card in Inter;
+  processor, memory and battery also come as square ring or fill tiles.
   - Time: clock, analog clock, date with a month calendar, day, month and year progress.
   - System: processor load with a one-minute chart, memory, network speed, disk space,
     battery, system tray, notifications, Recycle Bin, show desktop.
@@ -63,7 +64,9 @@ Nothing leaves your PC except the weather widget's requests to
 kept in `usage.json` next to it, start over each day, and can be cleared in Settings → Privacy.
 
 For trying things out, `BARCRAFT_DATA_DIR` points BarCraft at another folder for its settings,
-and `barcraft --open-settings` starts it with the settings window open.
+`barcraft --open-settings` starts it with the settings window open, and `barcraft --preview`
+draws the bar in an ordinary window, without docking it or touching the taskbar, so it can run
+next to your real dock.
 
 ## Build from source
 

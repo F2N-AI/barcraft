@@ -33,17 +33,38 @@ const POPUP_SPACE: f32 = 460.0;
 /// How often to check whether the screen or its scale changed.
 const RECHECK: Duration = Duration::from_secs(2);
 
-pub fn run(open_settings: bool) -> eframe::Result {
+/// How the app was started.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Launch {
+    /// Open the settings window straight away.
+    pub open_settings: bool,
+    /// Draw the bar in an ordinary window instead of docking it: no reserved screen space, no
+    /// taskbar changes, no watchdog. For looking at the design next to a running dock.
+    pub preview: bool,
+}
+
+/// The title of the preview window, so tools can find it.
+pub const PREVIEW_TITLE: &str = "BarCraft preview";
+
+pub fn run(launch: Launch) -> eframe::Result {
     let settings = crate::load_settings();
-    let viewport = egui::ViewportBuilder::default()
-        .with_title(APP_NAME)
-        .with_app_id("barcraft")
-        .with_decorations(false)
-        .with_transparent(true)
-        .with_resizable(false)
-        .with_taskbar(false)
-        .with_always_on_top()
-        .with_inner_size([640.0, 120.0]);
+    let viewport = if launch.preview {
+        egui::ViewportBuilder::default()
+            .with_title(PREVIEW_TITLE)
+            .with_app_id("barcraft-preview")
+            .with_inner_size([1760.0, 220.0])
+            .with_min_inner_size([600.0, 160.0])
+    } else {
+        egui::ViewportBuilder::default()
+            .with_title(APP_NAME)
+            .with_app_id("barcraft")
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_resizable(false)
+            .with_taskbar(false)
+            .with_always_on_top()
+            .with_inner_size([640.0, 120.0])
+    };
     let options = eframe::NativeOptions {
         viewport,
         ..Default::default()
@@ -51,7 +72,7 @@ pub fn run(open_settings: bool) -> eframe::Result {
     eframe::run_native(
         APP_NAME,
         options,
-        Box::new(move |cc| Ok(Box::new(BarApp::new(cc, settings, open_settings)))),
+        Box::new(move |cc| Ok(Box::new(BarApp::new(cc, settings, launch)))),
     )
 }
 
@@ -103,6 +124,8 @@ struct BarApp {
     widgets_scroll: f32,
     widgets_rect: Rect,
     apps_rect: Rect,
+    /// Drawing in an ordinary window, for looking at the design (see [`Launch::preview`]).
+    preview: bool,
 }
 
 fn own_window(cc: &eframe::CreationContext<'_>) -> Option<WindowId> {
@@ -132,14 +155,16 @@ fn to_px(r: Rect, scale: f32) -> PxRect {
 }
 
 impl BarApp {
-    fn new(cc: &eframe::CreationContext<'_>, mut settings: Settings, open_settings: bool) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, mut settings: Settings, launch: Launch) -> Self {
         let ctx = cc.egui_ctx.clone();
-        let window = own_window(cc);
+        crate::fonts::install(&ctx);
+        // A preview is an ordinary window: none of the docking below applies to it.
+        let window = if launch.preview { None } else { own_window(cc) };
         if let Some(w) = window {
             barcraft_win32::style_dock_window(w);
         }
         let appbar = window.and_then(AppBar::register);
-        if appbar.is_none() {
+        if appbar.is_none() && !launch.preview {
             log::warn!("could not reserve screen space for the dock; windows may cover it");
         }
         if !settings.pins_imported {
@@ -147,8 +172,11 @@ impl BarApp {
             save_settings(&settings);
         }
         settings.launch_at_startup = barcraft_win32::launch_at_startup(APP_NAME);
-        taskbar::apply(&mut settings);
-        taskbar::spawn_watchdog();
+        if !launch.preview {
+            taskbar::apply(&mut settings);
+            taskbar::spawn_watchdog();
+        }
+        let open_settings = launch.open_settings;
 
         let poller = Poller::start(ctx.clone(), crate::usage_path());
         let focus = FocusTimer::new(Duration::from_secs(u64::from(settings.focus_minutes) * 60));
@@ -173,6 +201,7 @@ impl BarApp {
             widgets_scroll: 0.0,
             widgets_rect: Rect::NOTHING,
             apps_rect: Rect::NOTHING,
+            preview: launch.preview,
         };
         app.send_weather();
         // Place the window before its first frame so it never shows in the wrong spot.
@@ -196,7 +225,12 @@ impl BarApp {
             window: self.window,
             monitor: self.placement.map(|p| p.monitor),
             hide_for_fullscreen: self.settings.hide_for_fullscreen,
-            taskbar_mode: self.settings.taskbar_mode,
+            // A preview never touches the taskbar (a real dock may be running beside it).
+            taskbar_mode: if self.preview {
+                barcraft_core::TaskbarMode::Untouched
+            } else {
+                self.settings.taskbar_mode
+            },
             widgets: self.settings.widgets.clone(),
         }
     }
@@ -391,8 +425,13 @@ impl BarApp {
         } else {
             draw::color(theme.tile)
         };
-        ui.painter()
-            .rect_filled(rect.shrink2(vec2(1.0, CELL_INSET)), CELL_RADIUS, fill);
+        draw::cell(
+            ui.painter(),
+            rect.shrink2(vec2(1.0, CELL_INSET)),
+            CELL_RADIUS,
+            fill,
+            theme,
+        );
         // Icons grow a little under the pointer, and shrink a little while pressed.
         let grow = if self.settings.magnify_icons {
             ctx.animate_bool_with_time(resp.id.with("grow"), resp.hovered(), 0.12)
@@ -663,7 +702,7 @@ impl BarApp {
             }
             self.settings.launch_at_startup = barcraft_win32::launch_at_startup(APP_NAME);
         }
-        if changes.taskbar {
+        if changes.taskbar && !self.preview {
             taskbar::apply(&mut self.settings);
         }
         if changes.weather {
@@ -725,7 +764,12 @@ fn window_title(w: &WindowRef) -> String {
 
 impl eframe::App for BarApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 0.0]
+        if self.preview {
+            // A neutral backdrop, so the bar reads as it would over a desktop.
+            [0.16, 0.17, 0.19, 1.0]
+        } else {
+            [0.0, 0.0, 0.0, 0.0]
+        }
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
@@ -774,9 +818,10 @@ impl eframe::App for BarApp {
 
         let size = self.settings.size;
         let bar_h = size.bar_height();
-        let (anchor, offset) = match self.settings.edge {
-            DockEdge::Bottom => (Align2::CENTER_BOTTOM, vec2(0.0, -MARGIN)),
-            DockEdge::Top => (Align2::CENTER_TOP, vec2(0.0, MARGIN)),
+        let (anchor, offset) = match (self.preview, self.settings.edge) {
+            (true, _) => (Align2::CENTER_CENTER, vec2(0.0, 0.0)),
+            (false, DockEdge::Bottom) => (Align2::CENTER_BOTTOM, vec2(0.0, -MARGIN)),
+            (false, DockEdge::Top) => (Align2::CENTER_TOP, vec2(0.0, MARGIN)),
         };
         let now = chrono::Local::now();
         let instant = Instant::now();
@@ -840,10 +885,12 @@ impl eframe::App for BarApp {
                             } else {
                                 theme.tile
                             };
-                            ui.painter().rect_filled(
+                            draw::cell(
+                                ui.painter(),
                                 rect.shrink2(vec2(1.0, CELL_INSET)),
                                 CELL_RADIUS,
                                 draw::color(fill),
+                                &theme,
                             );
                             draw::launcher(ui.painter(), rect, draw::color(theme.text));
                             let resp =
@@ -1075,7 +1122,9 @@ impl eframe::App for BarApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.appbar = None;
-        taskbar::restore(&mut self.settings);
+        if !self.preview {
+            taskbar::restore(&mut self.settings);
+        }
         save_settings(&self.settings);
     }
 }

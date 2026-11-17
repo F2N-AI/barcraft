@@ -11,10 +11,13 @@ pub enum WidgetKind {
     MonthProgress,
     YearProgress,
     Cpu,
+    CpuRing,
     Memory,
+    MemoryRing,
     Network,
     Storage,
     Battery,
+    BatteryTile,
     SystemTray,
     Notifications,
     RecycleBin,
@@ -58,7 +61,7 @@ impl WidgetGroup {
 }
 
 impl WidgetKind {
-    pub const ALL: [WidgetKind; 22] = [
+    pub const ALL: [WidgetKind; 25] = [
         WidgetKind::Clock,
         WidgetKind::AnalogClock,
         WidgetKind::Date,
@@ -66,10 +69,13 @@ impl WidgetKind {
         WidgetKind::MonthProgress,
         WidgetKind::YearProgress,
         WidgetKind::Cpu,
+        WidgetKind::CpuRing,
         WidgetKind::Memory,
+        WidgetKind::MemoryRing,
         WidgetKind::Network,
         WidgetKind::Storage,
         WidgetKind::Battery,
+        WidgetKind::BatteryTile,
         WidgetKind::SystemTray,
         WidgetKind::Notifications,
         WidgetKind::RecycleBin,
@@ -104,10 +110,13 @@ impl WidgetKind {
             WidgetKind::MonthProgress => "Month progress",
             WidgetKind::YearProgress => "Year progress",
             WidgetKind::Cpu => "Processor load",
+            WidgetKind::CpuRing => "Processor load (ring)",
             WidgetKind::Memory => "Memory in use",
+            WidgetKind::MemoryRing => "Memory in use (ring)",
             WidgetKind::Network => "Network speed",
             WidgetKind::Storage => "Disk space",
             WidgetKind::Battery => "Battery",
+            WidgetKind::BatteryTile => "Battery (tile)",
             WidgetKind::SystemTray => "System tray",
             WidgetKind::Notifications => "Notifications",
             WidgetKind::RecycleBin => "Recycle Bin",
@@ -132,6 +141,13 @@ impl WidgetKind {
             WidgetKind::YearProgress => "How much of this year has gone by.",
             WidgetKind::Cpu => "How busy the processor is, with the last minute as a chart.",
             WidgetKind::Memory => "How much memory is in use.",
+            WidgetKind::CpuRing => "Processor load as a ring around the number, in a square tile.",
+            WidgetKind::MemoryRing => {
+                "Memory in use as a ring around the number, in a square tile."
+            }
+            WidgetKind::BatteryTile => {
+                "A square tile that fills with the charge left. Hidden on PCs without a battery."
+            }
             WidgetKind::Network => "Download and upload speed right now.",
             WidgetKind::Storage => "Free space on the drive Windows is on.",
             WidgetKind::Battery => {
@@ -170,10 +186,13 @@ impl WidgetKind {
             | WidgetKind::MonthProgress
             | WidgetKind::YearProgress => WidgetGroup::Time,
             WidgetKind::Cpu
+            | WidgetKind::CpuRing
             | WidgetKind::Memory
+            | WidgetKind::MemoryRing
             | WidgetKind::Network
             | WidgetKind::Storage
             | WidgetKind::Battery
+            | WidgetKind::BatteryTile
             | WidgetKind::SystemTray
             | WidgetKind::Notifications
             | WidgetKind::RecycleBin

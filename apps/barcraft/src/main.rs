@@ -14,6 +14,7 @@
 
 mod app;
 mod draw;
+mod fonts;
 mod poller;
 mod settings_window;
 mod taskbar;
@@ -85,7 +86,7 @@ fn main() {
         }
         Some("--help") | Some("-h") => {
             println!(
-                "{APP_NAME} {}\n\n  barcraft                   start the dock\n  barcraft --open-settings    start the dock with its settings open\n  barcraft --restore-taskbar bring the Windows taskbar back and exit",
+                "{APP_NAME} {}\n\n  barcraft                   start the dock\n  barcraft --open-settings   start the dock with its settings open\n  barcraft --preview         draw the bar in an ordinary window, without docking it\n  barcraft --restore-taskbar bring the Windows taskbar back and exit",
                 env!("CARGO_PKG_VERSION")
             );
             return;
@@ -93,13 +94,22 @@ fn main() {
         _ => {}
     }
 
-    let Some(_instance) = barcraft_win32::SingleInstance::acquire(INSTANCE_MUTEX) else {
-        log::info!("{APP_NAME} is already running");
-        return;
+    let launch = app::Launch {
+        open_settings: args.iter().any(|a| a == "--open-settings"),
+        preview: args.iter().any(|a| a == "--preview"),
+    };
+    // A preview may run beside the real dock; only the dock itself must be unique.
+    let _instance = if launch.preview {
+        None
+    } else {
+        let Some(lock) = barcraft_win32::SingleInstance::acquire(INSTANCE_MUTEX) else {
+            log::info!("{APP_NAME} is already running");
+            return;
+        };
+        Some(lock)
     };
 
-    let open_settings = args.iter().any(|a| a == "--open-settings");
-    if let Err(e) = app::run(open_settings) {
+    if let Err(e) = app::run(launch) {
         log::error!("{APP_NAME} stopped: {e}");
     }
 }
