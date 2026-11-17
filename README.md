@@ -5,8 +5,9 @@ bottom edge of the screen, holds your apps and a row of live tiles (clock, calen
 memory load, battery, volume, weather, a focus timer), and stands in for the Windows taskbar while
 it runs. Close it and the taskbar comes back as it was.
 
-BarCraft is written from scratch in Rust with [egui](https://github.com/emilk/egui), in the spirit
-of the [ArtCraft](https://getartcraft.com) Craft apps: free, local, no account, no telemetry.
+BarCraft is made by [F2N](https://github.com/F2N-AI) and written from scratch in Rust with
+[egui](https://github.com/emilk/egui), in the spirit of the [ArtCraft](https://getartcraft.com)
+Craft apps: free, local, no account, no telemetry.
 
 > **Status: early alpha.** Windows only. Tried so far on one Windows 11 PC with two screens;
 > not yet tried on Windows 10. Known gaps:
