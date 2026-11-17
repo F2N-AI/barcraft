@@ -68,8 +68,8 @@ product's code, text or artwork.
   with arrows and a jump back to today), day, month and year progress.
 - System: processor load (with a one-minute chart), memory in use (ring), network speed
   (download, upload and a short chart), free space on the system drive, battery (hidden on PCs
-  without one; as a tile, liquid fills it to the charge left, its surface waving while the
-  battery charges or the pointer is on it and still otherwise), system tray (brings the hidden Windows taskbar up with its tray until the pointer
+  without one; liquid fills the card or the tile to the charge left, its surface waving while
+  the battery charges or the pointer is on it and still otherwise), system tray (brings the hidden Windows taskbar up with its tray until the pointer
   leaves it), notifications (opens the notification centre), Recycle Bin (click to open; its menu
   empties it after Windows' own confirmation), show desktop.
 - Sound and media: what's playing (from the system media session) with previous, play/pause and

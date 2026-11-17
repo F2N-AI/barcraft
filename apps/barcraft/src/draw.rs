@@ -94,39 +94,6 @@ fn arc(p: &Painter, center: Pos2, r: f32, from: f32, to: f32, stroke: Stroke) {
     p.add(Shape::line(points, stroke));
 }
 
-/// A battery outline filled to `fraction`, with a bolt while charging.
-pub fn battery(p: &Painter, rect: Rect, fraction: f32, charging: bool, c: Color32, fill: Color32) {
-    let h = rect.height().min(rect.width()) * 0.42;
-    let w = h * 1.9;
-    let body = Rect::from_center_size(rect.center() - vec2(h * 0.08, 0.0), vec2(w, h));
-    p.rect_stroke(body, 2.5, Stroke::new(1.4, c), egui::StrokeKind::Inside);
-    let nub = Rect::from_min_size(
-        pos2(body.right() + 1.0, body.center().y - h * 0.18),
-        vec2(h * 0.14, h * 0.36),
-    );
-    p.rect_filled(nub, 1.0, c);
-    let inner = body.shrink(2.6);
-    let f = if fraction.is_finite() {
-        fraction.clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let level = Rect::from_min_size(inner.min, vec2(inner.width() * f, inner.height()));
-    p.rect_filled(level, 1.2, fill);
-    if charging {
-        let m = body.center();
-        let bolt = vec![
-            pos2(m.x + h * 0.08, m.y - h * 0.42),
-            pos2(m.x - h * 0.22, m.y + h * 0.06),
-            pos2(m.x + h * 0.02, m.y + h * 0.06),
-            pos2(m.x - h * 0.08, m.y + h * 0.42),
-            pos2(m.x + h * 0.22, m.y - h * 0.06),
-            pos2(m.x - h * 0.02, m.y - h * 0.06),
-        ];
-        p.add(Shape::closed_line(bolt, Stroke::new(1.2, c)));
-    }
-}
-
 /// A small line chart of values between 0 and 1, filled underneath.
 pub fn sparkline(p: &Painter, rect: Rect, values: &[f32], capacity: usize, line: Color32) {
     if values.len() < 2 || capacity < 2 {
@@ -562,9 +529,24 @@ fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     )
 }
 
+/// How a liquid looks: its colour (opaque), how see-through it is, and where its waves are.
+#[derive(Clone, Copy, Debug)]
+pub struct Liquid {
+    pub colour: Color32,
+    /// 1 for a solid liquid, less to let what's behind (and text over it) show.
+    pub opacity: f32,
+    /// Moves the waves along, in radians; keep it still for a liquid at rest.
+    pub phase: f32,
+}
+
 /// Liquid filling a rounded rectangle to `level` (0 to 1), its surface a gentle double wave.
-/// `phase` (radians) moves the waves along; keep it still for a liquid at rest.
-pub fn liquid(p: &Painter, rect: Rect, radius: f32, level: f32, phase: f32, c: Color32) {
+pub fn liquid(p: &Painter, rect: Rect, radius: f32, level: f32, look: Liquid) {
+    p.add(Shape::Vec(liquid_shapes(rect, radius, level, look)));
+}
+
+/// The shapes of [`liquid`], to paint underneath something drawn earlier.
+pub fn liquid_shapes(rect: Rect, radius: f32, level: f32, look: Liquid) -> Vec<Shape> {
+    let mut shapes = Vec::with_capacity(3);
     let level = if level.is_finite() {
         level.clamp(0.0, 1.0)
     } else {
@@ -572,8 +554,10 @@ pub fn liquid(p: &Painter, rect: Rect, radius: f32, level: f32, phase: f32, c: C
     };
     let (w, h) = (rect.width(), rect.height());
     if level <= 0.0 || w <= 1.0 || h <= 1.0 {
-        return;
+        return shapes;
     }
+    let (c, phase) = (look.colour, look.phase);
+    let opacity = look.opacity.clamp(0.0, 1.0);
     let r = radius.clamp(0.0, w.min(h) / 2.0);
     // The rounded rectangle's top and bottom at `x`.
     let bounds = |x: f32| -> (f32, f32) {
@@ -592,7 +576,9 @@ pub fn liquid(p: &Painter, rect: Rect, radius: f32, level: f32, phase: f32, c: C
     let room = (surface - rect.top()).min(rect.bottom() - surface);
     let amp = (h * 0.07).min(2.4).min(room.max(0.0));
     let top_colour = mix(c, Color32::WHITE, 0.28);
-    let steps = 36;
+    // Waves about as long as the shape is tall, so a wide card gets several, not one swell.
+    let wave_len = w.min(h * 1.6);
+    let steps = ((w / 3.0).ceil() as usize).clamp(24, 96);
     // The paler wave behind, a little higher and out of step, then the main one.
     let waves = [
         (
@@ -606,13 +592,14 @@ pub fn liquid(p: &Painter, rect: Rect, radius: f32, level: f32, phase: f32, c: C
     ];
     for (k, &(a, ph, length, top_c, alpha)) in waves.iter().enumerate() {
         let mean = if k == 0 { surface - a * 0.6 } else { surface };
-        let bottom_c = c.gamma_multiply(alpha);
+        let bottom_c = c.gamma_multiply(alpha * opacity);
+        let top_c = top_c.gamma_multiply(opacity);
         let mut mesh = egui::Mesh::default();
         let mut crest = Vec::with_capacity(steps + 1);
         for i in 0..=steps {
             let x = rect.left() + w * i as f32 / steps as f32;
             let (lo, hi) = bounds(x);
-            let wave = mean + a * (TAU * (x - rect.left()) / (w * length) + ph).sin();
+            let wave = mean + a * (TAU * (x - rect.left()) / (wave_len * length) + ph).sin();
             let y_top = wave.max(lo).min(hi);
             let shade = ((y_top - rect.top()) / h).clamp(0.0, 1.0);
             mesh.colored_vertex(pos2(x, y_top), mix(top_c, bottom_c, shade * 0.5));
@@ -624,15 +611,14 @@ pub fn liquid(p: &Painter, rect: Rect, radius: f32, level: f32, phase: f32, c: C
                 mesh.add_triangle(j - 1, j + 1, j);
             }
         }
-        p.add(Shape::mesh(mesh));
+        shapes.push(Shape::mesh(mesh));
         // A bright line along the main surface; it also smooths the wave's edge.
         if k == 1 && level < 0.97 {
-            p.add(Shape::line(
-                crest,
-                Stroke::new(1.2, mix(top_c, Color32::WHITE, 0.35)),
-            ));
+            let line = mix(top_colour, Color32::WHITE, 0.35).gamma_multiply(opacity.max(0.5));
+            shapes.push(Shape::line(crest, Stroke::new(1.2, line)));
         }
     }
+    shapes
 }
 
 /// A cell's background: its fill, a faint light over the upper half and a thin edge, so cells

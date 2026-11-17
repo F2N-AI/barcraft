@@ -59,7 +59,7 @@ Widgets (no account, no typing)
 
 - Busiest apps (processor and memory), world clock, keyboard layout, light/dark switch.
 - More looks for widgets (gauges, dot grids); the first ones are in: processor and memory rings,
-  a battery tile of liquid.
+  battery card and tile filled with liquid.
 - Drag to reorder and to pin; app groups; drag a file onto an app.
 - A dock on every screen; bringing a hidden dock up with the Windows key.
 - Notes, to-dos and a launcher with search, each in its own window.

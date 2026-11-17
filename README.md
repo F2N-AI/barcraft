@@ -28,7 +28,7 @@ Craft apps: free, local, no account, no telemetry.
   - Middle-click: open a new window.
   - Right-click: the app's windows, pin or unpin, move, close, end task.
 - **25 widgets, no account needed.** Each sits in its own card, most with two lines in Inter;
-  processor and memory also come as square rings, and the battery as a tile of liquid.
+  processor and memory also come as square rings, and the battery card or tile fills with liquid.
   - Time: clock, analog clock, date with a month calendar, day, month and year progress.
   - System: processor load with a one-minute chart, memory, network speed, disk space,
     battery, system tray, notifications, Recycle Bin, show desktop.

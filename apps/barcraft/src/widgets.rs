@@ -485,6 +485,29 @@ impl WidgetUi<'_> {
         });
     }
 
+    /// Where a battery liquid's waves are: they move while the battery is `charging` or the
+    /// pointer is on `resp`, and stay still otherwise. The phase lives in the UI's memory, so
+    /// the waves stop and start without jumping.
+    fn liquid_phase(&mut self, ui: &Ui, resp: &Response, charging: bool) -> f32 {
+        let moving = (charging || resp.hovered()) && !self.preview;
+        let id = resp.id.with("liquid");
+        let time = ui.input(|i| i.time);
+        let (mut phase, last) = ui
+            .data(|d| d.get_temp::<(f32, f64)>(id))
+            .unwrap_or((0.8, time));
+        if moving {
+            let step = ((time - last) as f32).clamp(0.0, 0.25) * 2.4;
+            phase = (phase + step) % std::f32::consts::TAU;
+            if resp.hovered() {
+                ui.ctx().request_repaint();
+            } else {
+                self.fast_repaint = true;
+            }
+        }
+        ui.data_mut(|d| d.insert_temp(id, (phase, time)));
+        phase
+    }
+
     /// A square tile filled with liquid up to the charge left. The liquid moves while the battery
     /// charges or the pointer is on it, and rests otherwise.
     fn battery_tile(&mut self, ui: &mut Ui) {
@@ -497,31 +520,18 @@ impl WidgetUi<'_> {
         let low = p.percent.is_some_and(|v| v <= 20) && !p.charging;
         let colour = if low { self.warn() } else { self.accent() };
 
-        // The waves' phase lives in the UI's memory so it can stop and start without jumping.
-        let moving = (p.charging || resp.hovered()) && !self.preview;
-        let id = resp.id.with("liquid");
-        let time = ui.input(|i| i.time);
-        let (mut phase, last) = ui
-            .data(|d| d.get_temp::<(f32, f64)>(id))
-            .unwrap_or((0.8, time));
-        if moving {
-            phase = (phase + ((time - last) as f32).clamp(0.0, 0.25) * 2.4) % std::f32::consts::TAU;
-            if resp.hovered() {
-                ui.ctx().request_repaint();
-            } else {
-                self.fast_repaint = true;
-            }
-        }
-        ui.data_mut(|d| d.insert_temp(id, (phase, time)));
-
+        let phase = self.liquid_phase(ui, &resp, p.charging);
         let radius = cell_radius(&self.theme);
         draw::liquid(
             ui.painter(),
             cell.shrink(1.0),
             (radius - 1.0).max(0.0),
             fraction,
-            phase,
-            colour.gamma_multiply(0.92),
+            draw::Liquid {
+                colour,
+                opacity: 0.92,
+                phase,
+            },
         );
         draw::cell_edge(ui.painter(), cell, radius, &self.theme);
 
@@ -693,19 +703,51 @@ impl WidgetUi<'_> {
         } else {
             "Battery"
         };
-        let icon = self.height * 0.72;
-        let (_, extra, resp) = self.card_steady(ui, label, &value, "100%", icon, Sense::hover());
+        // The card itself is the battery: liquid fills it to the charge left, under the text,
+        // and its surface moves while charging or under the pointer. A bolt shows while charging.
+        let bolt = if p.charging { self.s() * 1.3 } else { 0.0 };
         let fraction = p.percent.map(|v| f32::from(v) / 100.0).unwrap_or(0.0);
-        let low = p.percent.is_some_and(|v| v <= 15) && !p.charging;
-        let fill = if low { self.warn() } else { self.accent() };
-        draw::battery(
-            ui.painter(),
-            extra.translate(vec2(-6.0, 0.0)),
-            fraction,
-            p.charging,
-            self.ink(),
-            fill,
+        // Once the liquid reaches the small label, the usual grey would sink into it.
+        let label_colour = if fraction >= 0.6 {
+            self.ink().gamma_multiply(0.82)
+        } else {
+            self.muted()
+        };
+        let behind = ui.painter().add(egui::Shape::Noop);
+        let (cell, extra, resp) = self.card_with(
+            ui,
+            label,
+            &value,
+            Some("100%"),
+            bolt,
+            Sense::hover(),
+            label_colour,
         );
+        let low = p.percent.is_some_and(|v| v <= 15) && !p.charging;
+        let colour = if low { self.warn() } else { self.accent() };
+        let phase = self.liquid_phase(ui, &resp, p.charging);
+        let radius = cell_radius(&self.theme);
+        ui.painter().set(
+            behind,
+            egui::Shape::Vec(draw::liquid_shapes(
+                cell.shrink(1.0),
+                (radius - 1.0).max(0.0),
+                fraction,
+                draw::Liquid {
+                    colour,
+                    opacity: 0.38,
+                    phase,
+                },
+            )),
+        );
+        if p.charging {
+            draw::bolt(
+                ui.painter(),
+                pos2(extra.center().x - PAD * 0.4, extra.center().y),
+                self.s() * 1.15,
+                self.ink(),
+            );
+        }
         resp.on_hover_text(format!("Battery {value}, {}", label.to_lowercase()));
     }
 
