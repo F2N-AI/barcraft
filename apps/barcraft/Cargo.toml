@@ -1,0 +1,21 @@
+[package]
+name = "barcraft"
+description = "BarCraft: an open-source dock with live widgets that stands in for the Windows taskbar."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+barcraft-core.workspace = true
+barcraft-win32.workspace = true
+chrono.workspace = true
+eframe.workspace = true
+egui.workspace = true
+log.workspace = true
+env_logger.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+raw-window-handle.workspace = true
