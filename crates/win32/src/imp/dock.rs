@@ -1,18 +1,20 @@
 //! Placing the dock on a screen edge, reserving its space, and hiding the system taskbar.
 
-use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateRectRgn, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
     MONITORINFO, MonitorFromPoint, MonitorFromWindow, SetWindowRgn,
 };
 use windows::Win32::UI::Shell::{
     ABE_BOTTOM, ABE_TOP, ABM_GETSTATE, ABM_NEW, ABM_QUERYPOS, ABM_REMOVE, ABM_SETPOS, ABM_SETSTATE,
-    ABS_ALWAYSONTOP, ABS_AUTOHIDE, APPBARDATA, SHAppBarMessage,
+    ABS_ALWAYSONTOP, ABS_AUTOHIDE, APPBARDATA, DefSubclassProc, RemoveWindowSubclass,
+    SHAppBarMessage, SetWindowSubclass,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowExW, FindWindowW, GWL_EXSTYLE, GetCursorPos, GetWindowLongPtrW, HWND_TOPMOST,
-    IsWindowVisible, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, WM_APP, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    IsWindowVisible, MA_NOACTIVATE, STYLESTRUCT, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE,
+    SWP_NOACTIVATE, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_APP, WM_MOUSEACTIVATE,
+    WM_NCDESTROY, WM_STYLECHANGING, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST,
 };
 use windows::core::{PCWSTR, w};
@@ -122,15 +124,53 @@ impl Drop for AppBar {
     }
 }
 
+/// The extended-style bits the dock must always have, and the ones it must never have.
+const DOCK_EX_ON: u32 = WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0 | WS_EX_TOPMOST.0;
+const DOCK_EX_OFF: u32 = WS_EX_APPWINDOW.0;
+const DOCK_SUBCLASS_ID: usize = 0xBA2C;
+
+/// Watches the dock window's messages. The window library rewrites the extended style on some
+/// events, which would let a click on the dock take focus from the user's app; this keeps the
+/// dock's bits in place and refuses activation by mouse outright.
+unsafe extern "system" fn dock_subclass(
+    h: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    if msg == WM_MOUSEACTIVATE {
+        return LRESULT(MA_NOACTIVATE as isize);
+    }
+    if msg == WM_NCDESTROY {
+        // SAFETY: removes this subclass from the window that is being destroyed, as required.
+        let _ = unsafe { RemoveWindowSubclass(h, Some(dock_subclass), DOCK_SUBCLASS_ID) };
+    }
+    if msg == WM_STYLECHANGING && wparam.0 as i32 == GWL_EXSTYLE.0 && lparam.0 != 0 {
+        // SAFETY: for WM_STYLECHANGING, lparam points at the STYLESTRUCT the system passes,
+        // which we may edit before the change is applied.
+        let change = unsafe { &mut *(lparam.0 as *mut STYLESTRUCT) };
+        change.styleNew = (change.styleNew | DOCK_EX_ON) & !DOCK_EX_OFF;
+    }
+    // SAFETY: hands every message on to the next handler in the chain, unchanged.
+    unsafe { DefSubclassProc(h, msg, wparam, lparam) }
+}
+
 /// Makes the dock window stay on top, stay out of Alt+Tab and the taskbar, and never take focus
 /// from the app the user is working in.
 pub fn style_dock_window(id: WindowId) {
     let h = hwnd(id);
+    // SAFETY: subclassing our own window with a procedure that only edits style changes and
+    // answers WM_MOUSEACTIVATE; it removes itself on WM_NCDESTROY.
+    let installed = unsafe { SetWindowSubclass(h, Some(dock_subclass), DOCK_SUBCLASS_ID, 0) };
+    if !installed.as_bool() {
+        log::warn!("could not watch the dock window; clicks on it may take focus");
+    }
     // SAFETY: reading and writing the extended style of our own window.
     unsafe {
         let ex = GetWindowLongPtrW(h, GWL_EXSTYLE) as u32;
-        let wanted =
-            (ex | WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0 | WS_EX_TOPMOST.0) & !WS_EX_APPWINDOW.0;
+        let wanted = (ex | DOCK_EX_ON) & !DOCK_EX_OFF;
         if wanted != ex {
             SetWindowLongPtrW(h, GWL_EXSTYLE, wanted as isize);
         }
@@ -243,7 +283,11 @@ pub fn set_taskbar_autohide(on: bool) {
 /// every screen again. Other screens keep their taskbar while the dock runs: the dock covers only
 /// the main screen.
 pub fn set_taskbar_shown(shown: bool) {
-    let trays = if shown { all_trays() } else { primary_tray().into_iter().collect() };
+    let trays = if shown {
+        all_trays()
+    } else {
+        primary_tray().into_iter().collect()
+    };
     for tray in trays {
         // SAFETY: changes only the show state of the shell's taskbar windows.
         let _ = unsafe { ShowWindow(tray, if shown { SW_SHOW } else { SW_HIDE }) };

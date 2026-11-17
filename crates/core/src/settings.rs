@@ -134,6 +134,7 @@ pub struct WeatherSettings {
     pub resolved_name: String,
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
+    #[serde(deserialize_with = "lenient::value")]
     pub unit: TempUnit,
 }
 
@@ -144,24 +145,72 @@ pub struct SavedTaskbar {
     pub autohide: bool,
 }
 
+/// Readers that never fail: a value this version doesn't understand (a widget or theme added
+/// by a newer version, a hand-edited typo) falls back to its default instead of making the
+/// whole file unreadable, which would lose the pinned apps and the saved taskbar state.
+mod lenient {
+    use serde::de::DeserializeOwned;
+    use serde::{Deserialize, Deserializer};
+
+    pub fn value<'de, D, T>(d: D) -> Result<T, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: DeserializeOwned + Default,
+    {
+        let raw = serde_json::Value::deserialize(d)?;
+        Ok(serde_json::from_value(raw).unwrap_or_default())
+    }
+
+    /// Keeps every entry it can read and skips the rest.
+    pub fn list<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: DeserializeOwned,
+    {
+        let raw = serde_json::Value::deserialize(d)?;
+        Ok(match raw {
+            serde_json::Value::Array(items) => items
+                .into_iter()
+                .filter_map(|item| serde_json::from_value(item).ok())
+                .collect(),
+            _ => Vec::new(),
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    #[serde(deserialize_with = "lenient::value")]
     pub edge: DockEdge,
+    #[serde(deserialize_with = "lenient::value")]
     pub size: DockSize,
+    #[serde(deserialize_with = "lenient::value")]
     pub theme: ThemeId,
+    #[serde(deserialize_with = "lenient::value")]
     pub clock_24h: bool,
+    #[serde(deserialize_with = "lenient::value")]
     pub show_seconds: bool,
+    #[serde(deserialize_with = "lenient::value")]
     pub indicator: IndicatorStyle,
+    #[serde(deserialize_with = "lenient::value")]
     pub taskbar_mode: TaskbarMode,
+    #[serde(deserialize_with = "lenient::value")]
     pub launch_at_startup: bool,
+    #[serde(deserialize_with = "lenient::value")]
     pub hide_for_fullscreen: bool,
+    #[serde(deserialize_with = "lenient::list")]
     pub widgets: Vec<WidgetKind>,
+    #[serde(deserialize_with = "lenient::list")]
     pub pinned: Vec<PinnedApp>,
     /// Whether the taskbar's pinned apps were already copied into `pinned` once.
+    #[serde(deserialize_with = "lenient::value")]
     pub pins_imported: bool,
+    #[serde(deserialize_with = "lenient::value")]
     pub weather: WeatherSettings,
+    #[serde(deserialize_with = "lenient::value")]
     pub saved_taskbar: Option<SavedTaskbar>,
+    #[serde(deserialize_with = "lenient::value")]
     pub focus_minutes: u32,
 }
 
@@ -352,6 +401,24 @@ mod tests {
         let s: Settings = serde_json::from_str(r#"{"edge":"Top","something_new":1}"#).unwrap();
         assert_eq!(s.edge, DockEdge::Top);
         assert_eq!(s.size, DockSize::Medium);
+    }
+
+    #[test]
+    fn values_from_another_version_do_not_lose_the_rest() {
+        // A widget and a theme this version doesn't know, and a wrongly typed number.
+        let json = r#"{
+            "theme": "SomeFutureTheme",
+            "widgets": ["Clock", "SomeFutureWidget", "Cpu"],
+            "focus_minutes": "lots",
+            "pinned": [{"path": "C:\\Apps\\a.exe", "name": "A"}, {"broken": true}],
+            "saved_taskbar": {"autohide": true}
+        }"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.theme, ThemeId::default());
+        assert_eq!(s.widgets, vec![WidgetKind::Clock, WidgetKind::Cpu]);
+        assert_eq!(s.focus_minutes, 0);
+        assert_eq!(s.pinned.len(), 1);
+        assert_eq!(s.saved_taskbar, Some(SavedTaskbar { autohide: true }));
     }
 
     #[test]

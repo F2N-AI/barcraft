@@ -36,10 +36,17 @@ pub fn settings_path() -> PathBuf {
 }
 
 pub fn load_settings() -> Settings {
-    match Settings::load(&settings_path()) {
+    let path = settings_path();
+    match Settings::load(&path) {
         Ok(s) => s,
         Err(e) => {
-            log::warn!("{e}; starting from the default settings");
+            // Keep the unreadable file: the defaults are saved over it later, and it may hold
+            // the user's pinned apps and the taskbar state to restore.
+            let backup = path.with_file_name("settings.broken.json");
+            match std::fs::copy(&path, &backup) {
+                Ok(_) => log::warn!("{e}; kept a copy as {}", backup.display()),
+                Err(copy_err) => log::warn!("{e}; could not keep a copy: {copy_err}"),
+            }
             Settings::default()
         }
     }
