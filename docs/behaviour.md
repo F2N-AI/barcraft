@@ -69,7 +69,9 @@ product's code, text or artwork.
 
 ## Settings
 
-- Theme (four of our own), size (three), screen edge, open-app mark, clock format.
+- Theme (five of our own; Smoke and Frost are glass: a separate, never-focused window under the
+  bar asks Windows to blur the desktop behind it, with corners rounded by Windows 11), size
+  (three), layout, screen edge, open-app mark, icon growth, clock format.
 - Taskbar choice, full-screen behaviour, start with Windows.
 - Widgets, focus timer length, weather place and units.
 - Pinned apps: reorder, remove, import again from the Windows taskbar.

@@ -25,8 +25,10 @@ use crate::poller::WeatherState;
 
 /// Horizontal padding inside a card.
 const PAD: f32 = 10.0;
-/// Corner radius of a cell.
-pub const CELL_RADIUS: f32 = 10.0;
+/// Corner radius of a cell: smaller on glass, where the bar's own corners are tighter.
+pub fn cell_radius(theme: &Theme) -> f32 {
+    if theme.glass { 6.0 } else { 10.0 }
+}
 /// Space between a cell and the bar's top and bottom edge.
 pub const CELL_INSET: f32 = 5.0;
 
@@ -150,7 +152,7 @@ impl WidgetUi<'_> {
         draw::cell(
             ui.painter(),
             cell,
-            CELL_RADIUS,
+            cell_radius(&self.theme),
             draw::color(fill),
             &self.theme,
         );
@@ -494,7 +496,7 @@ impl WidgetUi<'_> {
         let inner = cell.shrink(2.0);
         let h = inner.height() * fraction.clamp(0.0, 1.0);
         if h > 0.5 {
-            let r = (CELL_RADIUS - 2.0).max(0.0) as u8;
+            let r = (cell_radius(&self.theme) - 2.0).max(0.0) as u8;
             let top = if fraction > 0.95 { r } else { 2 };
             let fill_rect = Rect::from_min_max(pos2(inner.left(), inner.bottom() - h), inner.max);
             ui.painter().rect_filled(
@@ -892,8 +894,11 @@ impl WidgetUi<'_> {
         let done = 1.0 - remaining.as_secs_f32() / total;
         self.bottom_bar(ui, cell, done, self.accent());
         if phase == FocusPhase::Finished {
-            ui.painter()
-                .rect_filled(cell, CELL_RADIUS, self.accent().gamma_multiply(0.22));
+            ui.painter().rect_filled(
+                cell,
+                cell_radius(&self.theme),
+                self.accent().gamma_multiply(0.22),
+            );
         }
         let tip = match phase {
             FocusPhase::Idle => "Focus timer. Click to start, right-click to reset.",

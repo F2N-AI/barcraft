@@ -146,3 +146,18 @@ pub fn minimize_window(_id: WindowId) {}
 pub fn process_exe(_pid: u32) -> Option<PathBuf> {
     None
 }
+
+#[derive(Debug)]
+pub struct Backdrop;
+
+impl Backdrop {
+    pub fn create() -> Option<Backdrop> {
+        None
+    }
+    pub fn window(&self) -> WindowId {
+        WindowId(0)
+    }
+    pub const CORNER_RADIUS_POINTS: f32 = 8.0;
+    pub fn place(&mut self, _dock: WindowId, _rect: PxRect) {}
+    pub fn set_shown(&mut self, _shown: bool) {}
+}

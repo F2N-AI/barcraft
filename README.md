@@ -42,8 +42,9 @@ Craft apps: free, local, no account, no telemetry.
   it. When there are more apps than fit, the app area scrolls.
 - **Out of the way.** Clicking the dock never takes focus from your app, and the dock steps aside
   when a game or a video goes full screen.
-- **Themes and sizes.** Four themes of our own (Graphite, Paper, Smoke, Harbor), three sizes,
-  icons that grow a little under the pointer.
+- **Themes and sizes.** Five themes of our own, three sizes, icons that grow a little under the
+  pointer. Two are glass: Smoke (dark) and Frost (light) let the desktop show through the bar,
+  blurred by Windows itself (rounded corners need Windows 11; Windows 10 keeps them square).
 
 ## The Windows taskbar always comes back
 

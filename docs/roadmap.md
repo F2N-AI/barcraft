@@ -29,6 +29,8 @@ Dock
 - [x] Full-width layout option (apps on the left, widgets on the right) besides the centred bar.
 - [x] A cell behind every item, two-line cards for widgets, a soft glassy bar (gradient, edge
       light, shadow), icons that grow a little under the pointer.
+- [x] Real glass: Smoke and Frost blur the desktop behind the bar through a backdrop window of
+      its own (the dock window also holds the menus, so it can't carry the blur).
 
 Settings
 - [x] Sidebar sections (General, Look, Taskbar, Apps, Widgets, Weather, Privacy, About).
@@ -58,8 +60,6 @@ Widgets (no account, no typing)
 - Auto-hiding dock; a dock on every screen.
 - Notes, to-dos and a launcher with search, each in its own window.
 - Window previews on hover; jump lists.
-- Real background blur behind the bar: the biggest visual difference left. It needs the bar's
-  backdrop in a window of its own, since the dock window also holds the menus.
 - An installer (MSI) and signed releases with checksums, for the ArtCraft launcher.
 
 ## Not planned

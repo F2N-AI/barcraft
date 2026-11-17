@@ -71,6 +71,8 @@ pub struct Snapshot {
 #[derive(Clone, Debug)]
 pub struct DockWatch {
     pub window: Option<WindowId>,
+    /// The blurred backdrop under the bar, hidden and shown with the dock.
+    pub backdrop: Option<WindowId>,
     pub monitor: Option<PxRect>,
     pub hide_for_fullscreen: bool,
     pub taskbar_mode: TaskbarMode,
@@ -203,6 +205,7 @@ fn run(
     };
     let mut watch = DockWatch {
         window: None,
+        backdrop: None,
         monitor: None,
         hide_for_fullscreen: true,
         taskbar_mode: TaskbarMode::Untouched,
@@ -405,6 +408,9 @@ fn poll_windows(shared: &Mutex<Snapshot>, watch: &DockWatch, own_pid: u32) -> bo
         if let Some(own) = watch.window {
             // Done from here because a hidden window gets no frames to undo it.
             barcraft_win32::set_window_shown(own, !hide);
+        }
+        if let Some(backdrop) = watch.backdrop {
+            barcraft_win32::set_window_shown(backdrop, !hide);
         }
         changed = true;
     }

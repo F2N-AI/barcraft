@@ -524,10 +524,15 @@ pub fn analog_clock(
 pub fn cell(p: &Painter, rect: Rect, radius: f32, fill: Color32, theme: &barcraft_core::Theme) {
     let r = radius.round().clamp(0.0, 255.0) as u8;
     p.rect_filled(rect, r, fill);
-    let (sheen, edge) = if theme.dark {
-        (Color32::from_white_alpha(7), Color32::from_white_alpha(22))
-    } else {
-        (Color32::from_white_alpha(70), Color32::from_black_alpha(26))
+    // On glass, cells catch the light: a brighter edge reads better over a blurred desktop.
+    let (sheen, edge) = match (theme.glass, theme.dark) {
+        (true, true) => (Color32::from_white_alpha(10), Color32::from_white_alpha(34)),
+        (true, false) => (
+            Color32::from_white_alpha(60),
+            Color32::from_white_alpha(140),
+        ),
+        (false, true) => (Color32::from_white_alpha(7), Color32::from_white_alpha(22)),
+        (false, false) => (Color32::from_white_alpha(70), Color32::from_black_alpha(26)),
     };
     let upper = Rect::from_min_max(rect.min, pos2(rect.right(), rect.center().y));
     p.rect_filled(

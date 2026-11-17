@@ -10,7 +10,7 @@ use barcraft_core::focus::FocusTimer;
 use barcraft_core::{
     DockEdge, DockLayout, DockSize, IndicatorStyle, Settings, Theme, ThemeId, WidgetKind,
 };
-use barcraft_win32::{AppBar, Edge, PxRect, WindowId};
+use barcraft_win32::{AppBar, Backdrop, Edge, PxRect, WindowId};
 use egui::{
     Align2, Color32, CornerRadius, Id, Margin, Popup, PopupCloseBehavior, Pos2, Rect, RectAlign,
     Sense, Shadow, Shape, Stroke, Ui, vec2,
@@ -19,15 +19,25 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::poller::{Command, DockWatch, Poller};
 use crate::settings_window::{self, Changes, SettingsUi};
-use crate::widgets::{self, CELL_INSET, CELL_RADIUS, Readings, WidgetUi};
+use crate::widgets::{self, CELL_INSET, Readings, WidgetUi, cell_radius};
 use crate::{APP_NAME, draw, save_settings, taskbar};
 
 /// Gap between the bar and the screen edge, in points.
 const MARGIN: f32 = 6.0;
 /// Inner margin of the bar, left and right, in points.
 const BAR_PAD: f32 = 6.0;
-/// Corner radius of the bar.
+/// Corner radius of the bar (glass themes use the radius Windows rounds the blur with).
 const BAR_RADIUS: u8 = 16;
+
+/// The bar's corner radius for `theme`: on glass it must match the corners Windows gives the
+/// blurred backdrop.
+fn bar_radius(theme: &Theme) -> u8 {
+    if theme.glass {
+        Backdrop::CORNER_RADIUS_POINTS.round() as u8
+    } else {
+        BAR_RADIUS
+    }
+}
 /// Room above (or below) the bar for menus, tooltips and the calendar, in points.
 const POPUP_SPACE: f32 = 460.0;
 /// How often to check whether the screen or its scale changed.
@@ -126,6 +136,14 @@ struct BarApp {
     apps_rect: Rect,
     /// Drawing in an ordinary window, for looking at the design (see [`Launch::preview`]).
     preview: bool,
+    /// The blurred backdrop under the bar, for glass themes; made when first needed.
+    backdrop: Option<Backdrop>,
+    /// Where the backdrop was last put, and when its stacking order was last checked.
+    backdrop_at: Option<(PxRect, Instant)>,
+    /// The dock window's rectangle on screen, in pixels.
+    window_px: Option<PxRect>,
+    /// Set once making the backdrop failed, so it isn't retried every frame.
+    backdrop_unavailable: bool,
 }
 
 fn own_window(cc: &eframe::CreationContext<'_>) -> Option<WindowId> {
@@ -202,6 +220,10 @@ impl BarApp {
             widgets_rect: Rect::NOTHING,
             apps_rect: Rect::NOTHING,
             preview: launch.preview,
+            backdrop: None,
+            backdrop_at: None,
+            window_px: None,
+            backdrop_unavailable: false,
         };
         app.send_weather();
         // Place the window before its first frame so it never shows in the wrong spot.
@@ -223,6 +245,11 @@ impl BarApp {
     fn watch(&self) -> DockWatch {
         DockWatch {
             window: self.window,
+            backdrop: self
+                .backdrop
+                .as_ref()
+                .filter(|_| self.settings.theme.theme().glass)
+                .map(Backdrop::window),
             monitor: self.placement.map(|p| p.monitor),
             hide_for_fullscreen: self.settings.hide_for_fullscreen,
             // A preview never touches the taskbar (a real dock may be running beside it).
@@ -298,9 +325,56 @@ impl BarApp {
             },
         };
         barcraft_win32::place_window(win, rect);
+        self.window_px = Some(rect);
+        self.backdrop_at = None;
         self.placement = Some(want);
         self.region = None;
         self.poller.send(Command::Watch(self.watch()));
+    }
+
+    /// Keeps the blurred backdrop exactly under the bar (glass themes only), right below the
+    /// dock window, and hidden whenever the dock is.
+    fn update_backdrop(&mut self, bar: Rect, scale: f32, hidden_for_fullscreen: bool) {
+        let (Some(win), Some(window_px)) = (self.window, self.window_px) else {
+            return;
+        };
+        if !self.settings.theme.theme().glass {
+            if let Some(b) = self.backdrop.as_mut() {
+                b.set_shown(false);
+            }
+            return;
+        }
+        if self.backdrop.is_none() && !self.backdrop_unavailable {
+            self.backdrop = Backdrop::create();
+            if self.backdrop.is_none() {
+                self.backdrop_unavailable = true;
+                log::info!("Windows offers no blur here; glass themes keep a plain tint");
+            }
+            self.poller.send(Command::Watch(self.watch()));
+        }
+        let Some(backdrop) = self.backdrop.as_mut() else {
+            return;
+        };
+        let px = |v: f32| (v * scale).round() as i32;
+        let rect = PxRect {
+            left: window_px.left + px(bar.left()),
+            top: window_px.top + px(bar.top()),
+            right: window_px.left + px(bar.right()),
+            bottom: window_px.top + px(bar.bottom()),
+        };
+        if rect.width() <= 0 || rect.height() <= 0 {
+            return;
+        }
+        let now = Instant::now();
+        // Re-place when the bar moved or resized, and now and then to keep it under the dock.
+        let due = self
+            .backdrop_at
+            .is_none_or(|(at, t)| at != rect || now.duration_since(t) >= RECHECK);
+        if due {
+            backdrop.place(win, rect);
+            self.backdrop_at = Some((rect, now));
+        }
+        backdrop.set_shown(!hidden_for_fullscreen);
     }
 
     fn apply_style(&mut self, ctx: &egui::Context, theme: &Theme) {
@@ -428,7 +502,7 @@ impl BarApp {
         draw::cell(
             ui.painter(),
             rect.shrink2(vec2(1.0, CELL_INSET)),
-            CELL_RADIUS,
+            cell_radius(theme),
             fill,
             theme,
         );
@@ -719,36 +793,49 @@ impl BarApp {
     }
 }
 
-/// The bar's background: a soft shadow, the theme's fill, a faint light on the upper half
-/// and a thin edge, for a glassy look without blurring what's behind.
+/// The bar's background: a soft shadow (not for glass), the theme's fill, a faint light on the
+/// upper half and a thin edge. With a glass theme the fill is see-through and the backdrop
+/// window underneath blurs the desktop.
 fn bar_background(rect: Rect, theme: &Theme) -> Shape {
-    let radius = CornerRadius::same(BAR_RADIUS);
-    let shadow = Shadow {
-        offset: [0, 3],
-        blur: 14,
-        spread: 0,
-        color: Color32::from_black_alpha(80),
+    let r = bar_radius(theme);
+    let radius = CornerRadius::same(r);
+    let mut shapes = Vec::with_capacity(4);
+    // Glass gets no shadow: it would show through the fill and muddy the blur.
+    if !theme.glass {
+        let shadow = Shadow {
+            offset: [0, 3],
+            blur: 14,
+            spread: 0,
+            color: Color32::from_black_alpha(80),
+        }
+        .as_shape(rect, radius);
+        shapes.push(Shape::Rect(shadow));
     }
-    .as_shape(rect, radius);
-    let sheen_alpha = if theme.dark { 9 } else { 60 };
+    let sheen_alpha = match (theme.glass, theme.dark) {
+        (true, _) => 14,
+        (false, true) => 9,
+        (false, false) => 60,
+    };
     let upper = Rect::from_min_max(rect.min, Pos2::new(rect.right(), rect.center().y));
     let upper_radius = CornerRadius {
-        nw: BAR_RADIUS,
-        ne: BAR_RADIUS,
+        nw: r,
+        ne: r,
         sw: 0,
         se: 0,
     };
-    Shape::Vec(vec![
-        Shape::Rect(shadow),
-        Shape::rect_filled(rect, radius, draw::color(theme.bar)),
-        Shape::rect_filled(upper, upper_radius, Color32::from_white_alpha(sheen_alpha)),
-        Shape::rect_stroke(
-            rect,
-            radius,
-            Stroke::new(1.0, draw::color(theme.bar_edge)),
-            egui::StrokeKind::Inside,
-        ),
-    ])
+    shapes.push(Shape::rect_filled(rect, radius, draw::color(theme.bar)));
+    shapes.push(Shape::rect_filled(
+        upper,
+        upper_radius,
+        Color32::from_white_alpha(sheen_alpha),
+    ));
+    shapes.push(Shape::rect_stroke(
+        rect,
+        radius,
+        Stroke::new(1.0, draw::color(theme.bar_edge)),
+        egui::StrokeKind::Inside,
+    ));
+    Shape::Vec(shapes)
 }
 
 fn window_title(w: &WindowRef) -> String {
@@ -779,7 +866,7 @@ impl eframe::App for BarApp {
         let theme = self.settings.theme.theme();
         self.apply_style(&ctx, &theme);
 
-        let (windows, pids, foreground, readings) = {
+        let (windows, pids, foreground, readings, hidden_for_fullscreen) = {
             let snap = self.poller.snapshot();
             let windows: Vec<WindowRef> = snap
                 .windows
@@ -812,7 +899,13 @@ impl eframe::App for BarApp {
                     .collect(),
                 weather: snap.weather.clone(),
             };
-            (windows, pids, snap.foreground, readings)
+            (
+                windows,
+                pids,
+                snap.foreground,
+                readings,
+                snap.hidden_for_fullscreen,
+            )
         };
         let items = build_dock_items(&self.settings.pinned, &windows, &mut self.seen_order);
 
@@ -888,7 +981,7 @@ impl eframe::App for BarApp {
                             draw::cell(
                                 ui.painter(),
                                 rect.shrink2(vec2(1.0, CELL_INSET)),
-                                CELL_RADIUS,
+                                cell_radius(&theme),
                                 draw::color(fill),
                                 &theme,
                             );
@@ -1007,6 +1100,11 @@ impl eframe::App for BarApp {
                 ui.painter()
                     .set(background, bar_background(frame.response.rect, &theme));
             });
+        self.update_backdrop(
+            bar.response.rect,
+            ctx.pixels_per_point(),
+            hidden_for_fullscreen,
+        );
         // The wheel scrolls the widgets unless a widget used it (the volume widget does).
         if over_widgets && !widgets_wheel_used && wheel != 0.0 {
             self.widgets_scroll = (self.widgets_scroll - wheel).max(0.0);
@@ -1122,6 +1220,7 @@ impl eframe::App for BarApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.appbar = None;
+        self.backdrop = None;
         if !self.preview {
             taskbar::restore(&mut self.settings);
         }

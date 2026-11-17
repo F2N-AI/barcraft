@@ -1,6 +1,7 @@
 //! Win32 implementation. Each submodule keeps its `unsafe` blocks small and explained.
 
 mod audio;
+mod backdrop;
 mod dock;
 mod extra;
 mod icons;
@@ -12,6 +13,7 @@ mod util;
 mod wnd;
 
 pub use audio::{set_muted, set_volume, volume};
+pub use backdrop::Backdrop;
 pub use dock::{
     AppBar, cursor_pos, dpi_scale, monitor_of_window, place_window, primary_monitor,
     set_taskbar_autohide, set_taskbar_shown, set_window_region, set_window_shown,
