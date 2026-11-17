@@ -9,12 +9,17 @@ product's code, text or artwork.
 - The dock is a bar on the bottom or top edge of the main screen, centred, with a small gap to
   the edge.
 - It registers as an application desktop toolbar ("appbar"), so the shell keeps maximised windows
-  out of its strip.
+  out of its strip. With "Let windows use the space under the dock" it registers nothing: maximised
+  windows reach the screen edge and the dock floats over them (a maximised window is never taken
+  for a full-screen one).
 - Drag the bar into the other half of the screen to move it to that edge. The choice is saved.
 - It stays above other windows, never takes keyboard focus from the app in use, and doesn't
   appear in Alt+Tab.
 - When the focused window covers the whole screen (a game, a full-screen video), the dock hides.
   It comes back when that window leaves full screen. This can be turned off.
+- Auto-hide (optional): 0.7 s after the pointer leaves the dock, with no menu open, the bar
+  slides past the screen edge; touching that edge brings it back. While hidden the dock keeps
+  only a 2-point strip along the edge, reserves no space, and hides its glass backdrop.
 
 ## The Windows taskbar
 
@@ -44,20 +49,51 @@ product's code, text or artwork.
 - Middle-click opens a new window.
 - Right-click menu: the app's windows, open a new window, pin or unpin, move left or right, close
   window(s), end task.
+- Apps go by their own names: a Store app by its Start menu name ("Terminal", "WhatsApp"),
+  any other program by the description in its program file, or its product name when the
+  description only names what it is built with ("Electron"), and by its file name when there is
+  nothing better. Pinned apps keep the name of their shortcut.
+- Store apps take their icon from the Start menu, since many carry only a generic one in their
+  program file.
 - An app whose icon can't be read shows a tile with its first letter.
+- App icons have no cell behind them. Magnification (on by default, 10 to 100 %): the icon under
+  the pointer grows the most and its neighbours less the further away they are, growing away
+  from the screen edge and pushing the rest of the row aside. The point under the pointer never
+  moves, so a click lands on the icon drawn there. The bar widens by the same amount wherever the
+  pointer is along the row, only while the magnification fades in or out. Past the ends of the
+  row the end icon stays the largest. With magnification off, a soft patch marks the icon under
+  the pointer.
+- The name of the app under the pointer shows in a small label above its icon (below it on a
+  top dock), with no delay.
 
 ## Widgets
 
-- Clock (12/24-hour, optional seconds), date (click for a month calendar, with arrows and a jump
-  back to today), processor load (with a one-minute chart), memory in use (details on hover),
-  battery (hidden on PCs without one), volume (scroll to change, click to mute), weather for a
-  chosen place (Open-Meteo, no account), focus timer (click to start or pause, right-click to
-  reset), show desktop.
-- Add, remove and reorder them in Settings.
+- Every widget sits in its own rounded card; most have two lines (a small upper-case label
+  over a larger value), some are a single icon.
+- Time: clock (12/24-hour, optional seconds), analog clock, date (click for a month calendar,
+  with arrows and a jump back to today), day, month and year progress.
+- System: processor load (with a one-minute chart), memory in use (ring), network speed
+  (download, upload and a short chart), free space on the system drive, battery (hidden on PCs
+  without one; liquid fills the card or the tile to the charge left, its surface waving while
+  the battery charges or the pointer is on it and still otherwise), system tray (brings the hidden Windows taskbar up with its tray until the pointer
+  leaves it), notifications (opens the notification centre), Recycle Bin (click to open; its menu
+  empties it after Windows' own confirmation), show desktop.
+- Sound and media: what's playing (from the system media session) with previous, play/pause and
+  next; volume (scroll to change, click to mute); microphone (click to mute or unmute).
+- Productivity: focus timer (click to start or pause, right-click to reset), stopwatch (the
+  same), Time on PC (today's time with someone at the PC, by app in front; local only, starts
+  over each day, clearable).
+- Online: weather for a chosen place (Open-Meteo, no account), with today's high and low, the
+  next three days, sunrise and sunset in its pop-up.
+- Settings has a gallery of all widgets with live previews, categories and search; the dock's
+  own list there reorders and removes them.
 
 ## Settings
 
-- Theme (four of our own), size (three), screen edge, open-app mark, clock format.
+- Theme (six of our own; the default, Follow Windows, uses Frost in light mode and Smoke in dark
+  mode, following Windows as it changes; Smoke and Frost are glass: a separate, never-focused window under the
+  bar asks Windows to blur the desktop behind it, with corners rounded by Windows 11), size
+  (three), layout, screen edge, open-app mark, magnification and how much, clock format.
 - Taskbar choice, full-screen behaviour, start with Windows.
 - Widgets, focus timer length, weather place and units.
 - Pinned apps: reorder, remove, import again from the Windows taskbar.

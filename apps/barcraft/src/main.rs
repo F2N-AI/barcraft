@@ -14,6 +14,7 @@
 
 mod app;
 mod draw;
+mod fonts;
 mod poller;
 mod settings_window;
 mod taskbar;
@@ -26,8 +27,12 @@ use barcraft_core::Settings;
 pub const APP_NAME: &str = "BarCraft";
 const INSTANCE_MUTEX: &str = "Local\\BarCraft.SingleInstance";
 
-/// Where the settings file lives: `%APPDATA%\BarCraft\settings.json`.
+/// Where the settings file lives: `%APPDATA%\BarCraft\settings.json`, or in the folder named
+/// by `BARCRAFT_DATA_DIR` (for trying things out without touching the real settings).
 pub fn settings_path() -> PathBuf {
+    if let Some(dir) = std::env::var_os("BARCRAFT_DATA_DIR").filter(|d| !d.is_empty()) {
+        return PathBuf::from(dir).join("settings.json");
+    }
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
@@ -35,11 +40,23 @@ pub fn settings_path() -> PathBuf {
     base.join(APP_NAME).join("settings.json")
 }
 
+/// Where "Time on PC" keeps today's totals: `%APPDATA%\BarCraft\usage.json`.
+pub fn usage_path() -> PathBuf {
+    settings_path().with_file_name("usage.json")
+}
+
 pub fn load_settings() -> Settings {
-    match Settings::load(&settings_path()) {
+    let path = settings_path();
+    match Settings::load(&path) {
         Ok(s) => s,
         Err(e) => {
-            log::warn!("{e}; starting from the default settings");
+            // Keep the unreadable file: the defaults are saved over it later, and it may hold
+            // the user's pinned apps and the taskbar state to restore.
+            let backup = path.with_file_name("settings.broken.json");
+            match std::fs::copy(&path, &backup) {
+                Ok(_) => log::warn!("{e}; kept a copy as {}", backup.display()),
+                Err(copy_err) => log::warn!("{e}; could not keep a copy: {copy_err}"),
+            }
             Settings::default()
         }
     }
@@ -69,7 +86,7 @@ fn main() {
         }
         Some("--help") | Some("-h") => {
             println!(
-                "{APP_NAME} {}\n\n  barcraft                   start the dock\n  barcraft --restore-taskbar bring the Windows taskbar back and exit",
+                "{APP_NAME} {}\n\n  barcraft                   start the dock\n  barcraft --open-settings   start the dock with its settings open\n  barcraft --preview         draw the bar in an ordinary window, without docking it\n  barcraft --restore-taskbar bring the Windows taskbar back and exit",
                 env!("CARGO_PKG_VERSION")
             );
             return;
@@ -77,12 +94,22 @@ fn main() {
         _ => {}
     }
 
-    let Some(_instance) = barcraft_win32::SingleInstance::acquire(INSTANCE_MUTEX) else {
-        log::info!("{APP_NAME} is already running");
-        return;
+    let launch = app::Launch {
+        open_settings: args.iter().any(|a| a == "--open-settings"),
+        preview: args.iter().any(|a| a == "--preview"),
+    };
+    // A preview may run beside the real dock; only the dock itself must be unique.
+    let _instance = if launch.preview {
+        None
+    } else {
+        let Some(lock) = barcraft_win32::SingleInstance::acquire(INSTANCE_MUTEX) else {
+            log::info!("{APP_NAME} is already running");
+            return;
+        };
+        Some(lock)
     };
 
-    if let Err(e) = app::run() {
+    if let Err(e) = app::run(launch) {
         log::error!("{APP_NAME} stopped: {e}");
     }
 }

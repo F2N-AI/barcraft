@@ -30,6 +30,17 @@ pub struct WindowInfo {
     pub pid: u32,
     pub exe: Option<PathBuf>,
     pub minimized: bool,
+    /// For a packaged (Store) app, its AppUserModelID.
+    pub app_id: Option<String>,
+    /// The app's own name, when one was looked up (the platform layer leaves it empty).
+    pub app_name: Option<String>,
+}
+
+/// The names in a program file's version information.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VersionNames {
+    pub description: Option<String>,
+    pub product: Option<String>,
 }
 
 /// A rectangle in physical screen pixels.
@@ -98,6 +109,40 @@ pub struct VolumeStatus {
     /// From 0 to 1.
     pub level: f32,
     pub muted: bool,
+}
+
+/// Bytes received and sent by all physical network adapters since they started.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NetCounters {
+    pub received: u64,
+    pub sent: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiskSpace {
+    pub free: u64,
+    pub total: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecycleBinStatus {
+    pub items: u64,
+    pub bytes: u64,
+}
+
+/// What a media app (a music player, a browser tab with video) reports it is playing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaStatus {
+    pub title: String,
+    pub artist: String,
+    pub playing: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaAction {
+    PlayPause,
+    Next,
+    Previous,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

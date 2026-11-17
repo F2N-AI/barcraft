@@ -59,11 +59,25 @@ pub struct Place {
     pub longitude: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Current {
     pub temperature: f32,
     pub sky: Sky,
     pub is_day: bool,
+    /// Today first, then the following days.
+    pub days: Vec<DayForecast>,
+    /// Local `HH:MM` of today's sunrise and sunset.
+    pub sunrise: Option<String>,
+    pub sunset: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DayForecast {
+    /// `YYYY-MM-DD`, local to the place.
+    pub date: String,
+    pub max: f32,
+    pub min: f32,
+    pub sky: Sky,
 }
 
 /// Percent-encodes a query value (RFC 3986 unreserved characters pass through).
@@ -93,7 +107,9 @@ pub fn forecast_url(latitude: f64, longitude: f64, unit: TempUnit) -> String {
     };
     format!(
         "https://api.open-meteo.com/v1/forecast?latitude={latitude:.4}&longitude={longitude:.4}\
-         &current=temperature_2m,weather_code,is_day&temperature_unit={unit}&timezone=auto"
+         &current=temperature_2m,weather_code,is_day\
+         &daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset\
+         &forecast_days=4&temperature_unit={unit}&timezone=auto"
     )
 }
 
@@ -138,6 +154,45 @@ pub fn parse_geocoding(json: &str) -> Option<Place> {
 #[derive(Deserialize)]
 struct ForecastResponse {
     current: ForecastCurrent,
+    #[serde(default)]
+    daily: Option<ForecastDaily>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ForecastDaily {
+    time: Vec<String>,
+    weather_code: Vec<Option<u32>>,
+    temperature_2m_max: Vec<Option<f32>>,
+    temperature_2m_min: Vec<Option<f32>>,
+    sunrise: Vec<Option<String>>,
+    sunset: Vec<Option<String>>,
+}
+
+/// `2026-11-17T07:21` → `07:21`.
+fn clock_part(iso: &str) -> Option<String> {
+    iso.split_once('T')
+        .map(|(_, t)| t.chars().take(5).collect())
+        .filter(|t: &String| t.len() == 5)
+}
+
+fn daily_forecasts(d: &ForecastDaily) -> Vec<DayForecast> {
+    d.time
+        .iter()
+        .enumerate()
+        .take(7)
+        .filter_map(|(i, date)| {
+            let max = d.temperature_2m_max.get(i).copied().flatten()?;
+            let min = d.temperature_2m_min.get(i).copied().flatten()?;
+            let code = d.weather_code.get(i).copied().flatten()?;
+            (max.is_finite() && min.is_finite()).then(|| DayForecast {
+                date: date.clone(),
+                max,
+                min,
+                sky: Sky::from_wmo(code),
+            })
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -158,10 +213,16 @@ pub fn parse_forecast(json: &str) -> Option<Current> {
     if !c.temperature_2m.is_finite() {
         return None;
     }
+    let daily = resp.daily.unwrap_or_default();
+    let today_clock =
+        |list: &Vec<Option<String>>| list.first().cloned().flatten().and_then(|s| clock_part(&s));
     Some(Current {
         temperature: c.temperature_2m,
         sky: Sky::from_wmo(c.weather_code),
         is_day: c.is_day != 0,
+        days: daily_forecasts(&daily),
+        sunrise: today_clock(&daily.sunrise),
+        sunset: today_clock(&daily.sunset),
     })
 }
 
@@ -192,6 +253,29 @@ mod tests {
         assert_eq!(c.sky, Sky::Rain);
         assert!(c.is_day);
         assert!((c.temperature - 9.4).abs() < 1e-6);
+        assert!(c.days.is_empty());
+        assert_eq!(c.sunrise, None);
+    }
+
+    #[test]
+    fn parses_daily_forecast_and_skips_gaps() {
+        let json = r#"{
+            "current":{"temperature_2m":9.4,"weather_code":3,"is_day":0},
+            "daily":{
+                "time":["2026-11-17","2026-11-18","2026-11-19"],
+                "weather_code":[3,61,null],
+                "temperature_2m_max":[12.0,10.5,9.0],
+                "temperature_2m_min":[4.0,5.5,3.0],
+                "sunrise":["2026-11-17T07:21","2026-11-18T07:22","2026-11-19T07:23"],
+                "sunset":["2026-11-17T16:45","2026-11-18T16:44","2026-11-19T16:43"]
+            }
+        }"#;
+        let c = parse_forecast(json).unwrap();
+        assert_eq!(c.days.len(), 2);
+        assert_eq!(c.days[1].sky, Sky::Rain);
+        assert_eq!(c.sunrise.as_deref(), Some("07:21"));
+        assert_eq!(c.sunset.as_deref(), Some("16:45"));
+        assert!(!c.is_day);
     }
 
     #[test]

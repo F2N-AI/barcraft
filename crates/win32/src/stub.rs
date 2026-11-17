@@ -29,6 +29,35 @@ impl SingleInstance {
     }
 }
 
+pub fn empty_recycle_bin() {}
+pub fn idle_seconds() -> Option<u32> {
+    None
+}
+pub fn microphone() -> Option<VolumeStatus> {
+    None
+}
+pub fn net_counters() -> Option<crate::NetCounters> {
+    None
+}
+pub fn recycle_bin() -> Option<crate::RecycleBinStatus> {
+    None
+}
+pub fn set_microphone_muted(_muted: bool) {}
+pub fn system_drive_space() -> Option<crate::DiskSpace> {
+    None
+}
+pub fn media_action(_action: crate::MediaAction) {}
+pub fn media_status() -> Option<crate::MediaStatus> {
+    None
+}
+pub fn focus_system_tray() {}
+pub fn open_notification_center() {}
+pub fn open_recycle_bin() -> bool {
+    false
+}
+pub fn foreground_is_shell_ui() -> bool {
+    false
+}
 pub fn set_muted(_muted: bool) {}
 pub fn set_volume(_level: f32) {}
 pub fn volume() -> Option<VolumeStatus> {
@@ -60,6 +89,15 @@ pub fn taskbar_shown() -> bool {
 }
 pub fn icon_for_file(_path: &Path, _size: u32) -> Option<IconRgba> {
     None
+}
+pub fn icon_for_app(_app_id: &str, _size: u32) -> Option<IconRgba> {
+    None
+}
+pub fn packaged_app_name(_app_id: &str) -> Option<String> {
+    None
+}
+pub fn version_names(_path: &Path) -> crate::VersionNames {
+    crate::VersionNames::default()
 }
 pub fn icon_for_window(_id: WindowId) -> Option<IconRgba> {
     None
@@ -115,5 +153,23 @@ pub fn list_app_windows(_exclude_pid: u32) -> Vec<WindowInfo> {
 }
 pub fn minimize_window(_id: WindowId) {}
 pub fn process_exe(_pid: u32) -> Option<PathBuf> {
+    None
+}
+
+#[derive(Debug)]
+pub struct Backdrop;
+
+impl Backdrop {
+    pub fn create() -> Option<Backdrop> {
+        None
+    }
+    pub fn window(&self) -> WindowId {
+        WindowId(0)
+    }
+    pub const CORNER_RADIUS_POINTS: f32 = 8.0;
+    pub fn place(&mut self, _dock: WindowId, _rect: PxRect) {}
+    pub fn set_shown(&mut self, _shown: bool) {}
+}
+pub fn system_uses_light_theme() -> Option<bool> {
     None
 }

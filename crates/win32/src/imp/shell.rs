@@ -147,13 +147,34 @@ pub fn open_start_menu() {
     send(&[key(VK_LWIN, false), key(VK_LWIN, true)]);
 }
 
-/// Minimises every window, or brings them back (the Windows key + D).
-pub fn toggle_desktop() {
-    let d = VIRTUAL_KEY(u16::from(b'D'));
+/// The Windows key together with a letter key.
+fn win_plus(letter: u8) {
+    let k = VIRTUAL_KEY(u16::from(letter));
     send(&[
         key(VK_LWIN, false),
-        key(d, false),
-        key(d, true),
+        key(k, false),
+        key(k, true),
         key(VK_LWIN, true),
     ]);
+}
+
+/// Minimises every window, or brings them back (the Windows key + D).
+pub fn toggle_desktop() {
+    win_plus(b'D');
+}
+
+/// Opens the notification centre (the Windows key + N).
+pub fn open_notification_center() {
+    win_plus(b'N');
+}
+
+/// Puts keyboard focus on the system tray (the Windows key + B), which also brings a hidden
+/// or auto-hidden taskbar into view.
+pub fn focus_system_tray() {
+    win_plus(b'B');
+}
+
+/// Opens the Recycle Bin folder.
+pub fn open_recycle_bin() -> bool {
+    shell_open(&wide("shell:RecycleBinFolder"))
 }
