@@ -90,6 +90,15 @@ pub fn taskbar_shown() -> bool {
 pub fn icon_for_file(_path: &Path, _size: u32) -> Option<IconRgba> {
     None
 }
+pub fn icon_for_app(_app_id: &str, _size: u32) -> Option<IconRgba> {
+    None
+}
+pub fn packaged_app_name(_app_id: &str) -> Option<String> {
+    None
+}
+pub fn version_names(_path: &Path) -> crate::VersionNames {
+    crate::VersionNames::default()
+}
 pub fn icon_for_window(_id: WindowId) -> Option<IconRgba> {
     None
 }

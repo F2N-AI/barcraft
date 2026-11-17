@@ -481,6 +481,7 @@ impl BarApp {
                     key,
                     file: item.icon_path.clone(),
                     window: item.windows.first().map(|w| WindowId(w.id)),
+                    app_id: item.app_id.clone(),
                 });
                 let _ = ctx;
                 None
@@ -1078,6 +1079,8 @@ impl eframe::App for BarApp {
                     title: w.title.clone(),
                     exe: w.exe.clone(),
                     minimized: w.minimized,
+                    app_name: w.app_name.clone(),
+                    app_id: w.app_id.clone(),
                 })
                 .collect();
             let pids: HashMap<isize, u32> = snap.windows.iter().map(|w| (w.id.0, w.pid)).collect();

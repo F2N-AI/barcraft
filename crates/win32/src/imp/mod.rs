@@ -1,5 +1,6 @@
 //! Win32 implementation. Each submodule keeps its `unsafe` blocks small and explained.
 
+mod appinfo;
 mod audio;
 mod backdrop;
 mod dock;
@@ -12,6 +13,7 @@ mod sys;
 mod util;
 mod wnd;
 
+pub use appinfo::{packaged_app_name, version_names};
 pub use audio::{set_muted, set_volume, volume};
 pub use backdrop::Backdrop;
 pub use dock::{
@@ -23,7 +25,7 @@ pub use extra::{
     empty_recycle_bin, idle_seconds, microphone, net_counters, recycle_bin, set_microphone_muted,
     system_drive_space,
 };
-pub use icons::{icon_for_file, icon_for_window};
+pub use icons::{icon_for_app, icon_for_file, icon_for_window};
 pub use media::{media_action, media_status};
 pub use process::{
     SingleInstance, launch_at_startup, set_launch_at_startup, system_uses_light_theme,

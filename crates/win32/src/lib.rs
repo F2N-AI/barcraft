@@ -30,6 +30,17 @@ pub struct WindowInfo {
     pub pid: u32,
     pub exe: Option<PathBuf>,
     pub minimized: bool,
+    /// For a packaged (Store) app, its AppUserModelID.
+    pub app_id: Option<String>,
+    /// The app's own name, when one was looked up (the platform layer leaves it empty).
+    pub app_name: Option<String>,
+}
+
+/// The names in a program file's version information.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VersionNames {
+    pub description: Option<String>,
+    pub product: Option<String>,
 }
 
 /// A rectangle in physical screen pixels.

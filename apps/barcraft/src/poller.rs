@@ -1,13 +1,13 @@
 //! A background thread that reads the system (windows, load, battery, volume, network, media,
 //! weather, icons) so the dock's drawing never waits on Windows or the network.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use barcraft_core::apps::display_name;
+use barcraft_core::apps::{display_name, friendly_name, normalize_path};
 use barcraft_core::cpu::{CpuTimes, History, busy_fraction};
 use barcraft_core::settings::WeatherSettings;
 use barcraft_core::usage::DayUsage;
@@ -32,7 +32,8 @@ const IDLE_LIMIT_SECS: u32 = 120;
 /// How long the taskbar stays up after the tray tile is clicked, before the pointer reaches it.
 const TRAY_GRACE: Duration = Duration::from_secs(4);
 const TRAY_LINGER: Duration = Duration::from_millis(1500);
-const ICON_SIDE: u32 = 96;
+/// Big enough for the largest size magnified on a high-density screen.
+const ICON_SIDE: u32 = 128;
 const NET_HISTORY: usize = 30;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -92,6 +93,8 @@ pub enum Command {
         key: String,
         file: Option<PathBuf>,
         window: Option<WindowId>,
+        /// A packaged (Store) app's identity, whose Start menu picture beats its program's.
+        app_id: Option<String>,
     },
     Weather(WeatherSettings),
     SetVolume(f32),
@@ -180,6 +183,8 @@ struct State {
     usage_dirty: bool,
     tray_until: Option<Instant>,
     weather: Option<WeatherJob>,
+    /// Apps' own names, looked up once per app (see [`app_name`]).
+    names: HashMap<String, Option<String>>,
 }
 
 fn run(
@@ -205,6 +210,7 @@ fn run(
         usage_dirty: false,
         tray_until: None,
         weather: None,
+        names: HashMap::new(),
     };
     let mut watch = DockWatch {
         window: None,
@@ -244,7 +250,7 @@ fn run(
 
         if now.duration_since(st.last_windows) >= WINDOWS_EVERY {
             st.last_windows = now;
-            changed |= poll_windows(&shared, &watch, own_pid);
+            changed |= poll_windows(&shared, &watch, own_pid, &mut st.names);
             track_usage(&shared, &watch, &mut st, now);
             update_tray_peek(&mut st, now);
         }
@@ -325,10 +331,20 @@ fn handle(
     watch: &mut DockWatch,
 ) {
     match cmd {
-        Command::LoadIcon { key, file, window } => {
-            let icon = file
+        Command::LoadIcon {
+            key,
+            file,
+            window,
+            app_id,
+        } => {
+            // A Store app's own picture first: its program file often holds only a generic one.
+            let icon = app_id
                 .as_deref()
-                .and_then(|f| barcraft_win32::icon_for_file(f, ICON_SIDE))
+                .and_then(|id| barcraft_win32::icon_for_app(id, ICON_SIDE))
+                .or_else(|| {
+                    file.as_deref()
+                        .and_then(|f| barcraft_win32::icon_for_file(f, ICON_SIDE))
+                })
                 .or_else(|| window.and_then(barcraft_win32::icon_for_window));
             lock(shared).icons.push_back((key, icon));
         }
@@ -390,8 +406,53 @@ fn handle(
     repaint.request_repaint();
 }
 
-fn poll_windows(shared: &Mutex<Snapshot>, watch: &DockWatch, own_pid: u32) -> bool {
-    let windows = barcraft_win32::list_app_windows(own_pid);
+/// Which app a window belongs to, for remembering its name.
+fn app_key(w: &WindowInfo) -> Option<String> {
+    w.app_id
+        .clone()
+        .or_else(|| w.exe.as_deref().map(normalize_path))
+}
+
+/// The name an app calls itself: its Start menu name for a Store app, else the description in
+/// its program file. Looked up once per app (the first lookup can be slow) and remembered,
+/// failures included, while the app has windows open.
+fn app_name(w: &WindowInfo, names: &mut HashMap<String, Option<String>>) -> Option<String> {
+    let key = app_key(w)?;
+    names
+        .entry(key)
+        .or_insert_with(|| {
+            let package = w
+                .app_id
+                .as_deref()
+                .and_then(barcraft_win32::packaged_app_name);
+            let exe = w.exe.as_deref()?;
+            let version = if package.is_some() {
+                Default::default()
+            } else {
+                barcraft_win32::version_names(exe)
+            };
+            Some(friendly_name(
+                package.as_deref(),
+                version.description.as_deref(),
+                version.product.as_deref(),
+                exe,
+            ))
+        })
+        .clone()
+}
+
+fn poll_windows(
+    shared: &Mutex<Snapshot>,
+    watch: &DockWatch,
+    own_pid: u32,
+    names: &mut HashMap<String, Option<String>>,
+) -> bool {
+    let mut windows = barcraft_win32::list_app_windows(own_pid);
+    // Named before comparing with the last list, so a lookup isn't taken for a change.
+    for w in &mut windows {
+        w.app_name = app_name(w, names);
+    }
+    names.retain(|key, _| windows.iter().any(|w| app_key(w).as_ref() == Some(key)));
     let foreground = barcraft_win32::foreground_window();
     let hide = match (watch.window, watch.monitor) {
         (Some(own), Some(monitor)) if watch.hide_for_fullscreen => {
@@ -489,13 +550,11 @@ fn track_usage(shared: &Mutex<Snapshot>, watch: &DockWatch, st: &mut State, now:
     let Some(fg) = snap.foreground else {
         return;
     };
-    let Some(app) = snap
-        .windows
-        .iter()
-        .find(|w| w.id == fg)
-        .and_then(|w| w.exe.as_deref())
-        .map(display_name)
-    else {
+    let Some(app) = snap.windows.iter().find(|w| w.id == fg).and_then(|w| {
+        w.app_name
+            .clone()
+            .or_else(|| w.exe.as_deref().map(display_name))
+    }) else {
         return;
     };
     st.usage_carry += elapsed;

@@ -49,6 +49,12 @@ product's code, text or artwork.
 - Middle-click opens a new window.
 - Right-click menu: the app's windows, open a new window, pin or unpin, move left or right, close
   window(s), end task.
+- Apps go by their own names: a Store app by its Start menu name ("Terminal", "WhatsApp"),
+  any other program by the description in its program file, or its product name when the
+  description only names what it is built with ("Electron"), and by its file name when there is
+  nothing better. Pinned apps keep the name of their shortcut.
+- Store apps take their icon from the Start menu, since many carry only a generic one in their
+  program file.
 - An app whose icon can't be read shows a tile with its first letter.
 - App icons have no cell behind them. Magnification (on by default, 10 to 100 %): the icon under
   the pointer grows the most and its neighbours less the further away they are, growing away
