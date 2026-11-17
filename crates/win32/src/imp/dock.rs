@@ -11,11 +11,12 @@ use windows::Win32::UI::Shell::{
     SHAppBarMessage, SetWindowSubclass,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, FindWindowW, GWL_EXSTYLE, GetCursorPos, GetWindowLongPtrW, HWND_TOPMOST,
-    IsWindowVisible, MA_NOACTIVATE, STYLESTRUCT, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE,
-    SWP_NOACTIVATE, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_APP, WM_MOUSEACTIVATE,
-    WM_NCDESTROY, WM_STYLECHANGING, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST,
+    FindWindowExW, FindWindowW, GWL_EXSTYLE, GWL_STYLE, GetCursorPos, GetWindowLongPtrW,
+    HWND_TOPMOST, IsWindowVisible, MA_NOACTIVATE, STYLESTRUCT, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, WM_APP, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_STYLECHANGING, WS_CAPTION,
+    WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_MAXIMIZEBOX,
+    WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
 };
 use windows::core::{PCWSTR, w};
 
@@ -127,6 +128,11 @@ impl Drop for AppBar {
 /// The extended-style bits the dock must always have, and the ones it must never have.
 const DOCK_EX_ON: u32 = WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0 | WS_EX_TOPMOST.0;
 const DOCK_EX_OFF: u32 = WS_EX_APPWINDOW.0;
+/// The dock is a plain pop-up. Caption-related styles would make Windows draw a title-bar tint and
+/// a close button over the see-through part of the window as soon as it takes the pointer.
+const DOCK_STYLE_ON: u32 = WS_POPUP.0;
+const DOCK_STYLE_OFF: u32 =
+    WS_CAPTION.0 | WS_SYSMENU.0 | WS_THICKFRAME.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0;
 const DOCK_SUBCLASS_ID: usize = 0xBA2C;
 
 /// Watches the dock window's messages. The window library rewrites the extended style on some
@@ -147,11 +153,16 @@ unsafe extern "system" fn dock_subclass(
         // SAFETY: removes this subclass from the window that is being destroyed, as required.
         let _ = unsafe { RemoveWindowSubclass(h, Some(dock_subclass), DOCK_SUBCLASS_ID) };
     }
-    if msg == WM_STYLECHANGING && wparam.0 as i32 == GWL_EXSTYLE.0 && lparam.0 != 0 {
+    if msg == WM_STYLECHANGING && lparam.0 != 0 {
+        let which = wparam.0 as i32;
         // SAFETY: for WM_STYLECHANGING, lparam points at the STYLESTRUCT the system passes,
         // which we may edit before the change is applied.
         let change = unsafe { &mut *(lparam.0 as *mut STYLESTRUCT) };
-        change.styleNew = (change.styleNew | DOCK_EX_ON) & !DOCK_EX_OFF;
+        if which == GWL_EXSTYLE.0 {
+            change.styleNew = (change.styleNew | DOCK_EX_ON) & !DOCK_EX_OFF;
+        } else if which == GWL_STYLE.0 {
+            change.styleNew = (change.styleNew | DOCK_STYLE_ON) & !DOCK_STYLE_OFF;
+        }
     }
     // SAFETY: hands every message on to the next handler in the chain, unchanged.
     unsafe { DefSubclassProc(h, msg, wparam, lparam) }
@@ -167,13 +178,28 @@ pub fn style_dock_window(id: WindowId) {
     if !installed.as_bool() {
         log::warn!("could not watch the dock window; clicks on it may take focus");
     }
-    // SAFETY: reading and writing the extended style of our own window.
+    // SAFETY: reading and writing the styles of our own window, then asking Windows to
+    // recompute its frame, which the style change removes.
     unsafe {
+        let style = GetWindowLongPtrW(h, GWL_STYLE) as u32;
+        let wanted_style = (style | DOCK_STYLE_ON) & !DOCK_STYLE_OFF;
+        if wanted_style != style {
+            SetWindowLongPtrW(h, GWL_STYLE, wanted_style as isize);
+        }
         let ex = GetWindowLongPtrW(h, GWL_EXSTYLE) as u32;
         let wanted = (ex | DOCK_EX_ON) & !DOCK_EX_OFF;
         if wanted != ex {
             SetWindowLongPtrW(h, GWL_EXSTYLE, wanted as isize);
         }
+        let _ = SetWindowPos(
+            h,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
     }
 }
 
