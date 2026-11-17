@@ -31,6 +31,8 @@ Dock
       light, shadow), icons that grow a little under the pointer.
 - [x] Real glass: Smoke and Frost blur the desktop behind the bar through a backdrop window of
       its own (the dock window also holds the menus, so it can't carry the blur).
+- [x] A theme that follows Windows' light and dark mode (Frost and Smoke), now the default.
+- [x] Optionally let windows use the space under the dock, which then floats over them.
 
 Settings
 - [x] Sidebar sections (General, Look, Taskbar, Apps, Widgets, Weather, Privacy, About).

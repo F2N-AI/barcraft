@@ -9,7 +9,9 @@ product's code, text or artwork.
 - The dock is a bar on the bottom or top edge of the main screen, centred, with a small gap to
   the edge.
 - It registers as an application desktop toolbar ("appbar"), so the shell keeps maximised windows
-  out of its strip.
+  out of its strip. With "Let windows use the space under the dock" it registers nothing: maximised
+  windows reach the screen edge and the dock floats over them (a maximised window is never taken
+  for a full-screen one).
 - Drag the bar into the other half of the screen to move it to that edge. The choice is saved.
 - It stays above other windows, never takes keyboard focus from the app in use, and doesn't
   appear in Alt+Tab.
@@ -69,7 +71,8 @@ product's code, text or artwork.
 
 ## Settings
 
-- Theme (five of our own; Smoke and Frost are glass: a separate, never-focused window under the
+- Theme (six of our own; the default, Follow Windows, uses Frost in light mode and Smoke in dark
+  mode, following Windows as it changes; Smoke and Frost are glass: a separate, never-focused window under the
   bar asks Windows to blur the desktop behind it, with corners rounded by Windows 11), size
   (three), layout, screen edge, open-app mark, icon growth, clock format.
 - Taskbar choice, full-screen behaviour, start with Windows.

@@ -64,6 +64,8 @@ pub struct Readings {
     pub usage_total: u64,
     pub usage_top: Vec<(String, u64)>,
     pub weather: WeatherState,
+    /// Whether Windows is in light mode.
+    pub windows_light: bool,
 }
 
 pub struct WidgetUi<'a> {

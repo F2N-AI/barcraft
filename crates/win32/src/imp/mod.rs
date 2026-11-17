@@ -25,7 +25,10 @@ pub use extra::{
 };
 pub use icons::{icon_for_file, icon_for_window};
 pub use media::{media_action, media_status};
-pub use process::{SingleInstance, launch_at_startup, set_launch_at_startup, wait_for_exit};
+pub use process::{
+    SingleInstance, launch_at_startup, set_launch_at_startup, system_uses_light_theme,
+    wait_for_exit,
+};
 pub use shell::{
     focus_system_tray, launch, open_notification_center, open_recycle_bin, open_start_menu,
     open_url, resolve_shortcut, taskbar_pins, toggle_desktop,

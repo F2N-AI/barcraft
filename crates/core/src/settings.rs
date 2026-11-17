@@ -225,6 +225,10 @@ pub struct Settings {
     pub launch_at_startup: bool,
     #[serde(deserialize_with = "lenient::value")]
     pub hide_for_fullscreen: bool,
+    /// Windows may use the space under the dock: maximised windows reach the screen edge and
+    /// the dock floats over them, as on a Mac. Off: the dock keeps its strip to itself.
+    #[serde(deserialize_with = "lenient::value")]
+    pub float_over_windows: bool,
     #[serde(deserialize_with = "lenient::list")]
     pub widgets: Vec<WidgetKind>,
     #[serde(deserialize_with = "lenient::list")]
@@ -247,13 +251,14 @@ impl Default for Settings {
             size: DockSize::Medium,
             layout: DockLayout::Centred,
             magnify_icons: true,
-            theme: ThemeId::Graphite,
+            theme: ThemeId::FollowWindows,
             clock_24h: true,
             show_seconds: false,
             indicator: IndicatorStyle::Dot,
             taskbar_mode: TaskbarMode::Hidden,
             launch_at_startup: false,
             hide_for_fullscreen: true,
+            float_over_windows: false,
             widgets: WidgetKind::DEFAULT_SET.to_vec(),
             pinned: Vec::new(),
             pins_imported: false,

@@ -65,6 +65,8 @@ pub struct Snapshot {
     /// Icons loaded since the dock last took them.
     pub icons: VecDeque<(String, Option<IconRgba>)>,
     pub hidden_for_fullscreen: bool,
+    /// Whether Windows is in light mode, for the "Follow Windows" theme.
+    pub windows_light: bool,
 }
 
 /// What the poller needs to know about the dock.
@@ -127,6 +129,7 @@ impl Poller {
             resolved_place: None,
             icons: VecDeque::new(),
             hidden_for_fullscreen: false,
+            windows_light: barcraft_win32::system_uses_light_theme().unwrap_or(false),
         }));
         let (tx, rx) = channel();
         let thread_shared = Arc::clone(&shared);
@@ -428,6 +431,7 @@ fn poll_stats(shared: &Mutex<Snapshot>, watch: &DockWatch, st: &mut State, now: 
     let memory = barcraft_win32::memory_status();
     let power = barcraft_win32::power_status();
     let volume = barcraft_win32::volume();
+    let windows_light = barcraft_win32::system_uses_light_theme();
     let microphone = watch
         .wants(WidgetKind::Microphone)
         .then(barcraft_win32::microphone)
@@ -458,6 +462,9 @@ fn poll_stats(shared: &Mutex<Snapshot>, watch: &DockWatch, st: &mut State, now: 
     snap.memory = memory;
     snap.power = power;
     snap.volume = volume;
+    if let Some(light) = windows_light {
+        snap.windows_light = light;
+    }
     snap.microphone = microphone;
     if let Some((down, up)) = rates {
         if snap.net_down.len() == NET_HISTORY {

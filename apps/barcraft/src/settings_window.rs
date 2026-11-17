@@ -184,6 +184,19 @@ fn general(ui: &mut Ui, s: &mut Settings, c: &mut Changes) {
     {
         c.any = true;
     }
+    if ui
+        .checkbox(
+            &mut s.float_over_windows,
+            "Let windows use the space under the dock",
+        )
+        .on_hover_text(
+            "Maximised windows reach the edge of the screen and the dock floats over them, as on a Mac. With a glass theme you then see them, blurred, through the bar.",
+        )
+        .changed()
+    {
+        c.any = true;
+        c.placement = true;
+    }
     ui.add_space(10.0);
     row(ui, "Clock", |ui| {
         c.any |= ui.checkbox(&mut s.clock_24h, "24-hour").changed();
@@ -207,7 +220,16 @@ fn general(ui: &mut Ui, s: &mut Settings, c: &mut Changes) {
 }
 
 fn swatch(ui: &mut Ui, id: ThemeId) {
-    let t = id.theme();
+    if id == ThemeId::FollowWindows {
+        // Both looks it switches between: light, then dark.
+        swatch_of(ui, id.resolve(true));
+        swatch_of(ui, id.resolve(false));
+    } else {
+        swatch_of(ui, id.theme());
+    }
+}
+
+fn swatch_of(ui: &mut Ui, t: barcraft_core::Theme) {
     let (r, _) = ui.allocate_exact_size(vec2(46.0, 18.0), Sense::hover());
     ui.painter().rect_filled(r, 9.0, draw::color(t.bar));
     ui.painter().rect_stroke(
@@ -428,7 +450,7 @@ fn widgets(
         size: DockSize::Small,
         ..s.clone()
     };
-    let theme = s.theme.theme();
+    let theme = s.theme.resolve(readings.windows_light);
     let now = chrono::Local::now();
     let mut focus = FocusTimer::new(std::time::Duration::from_secs(
         u64::from(s.focus_minutes) * 60,

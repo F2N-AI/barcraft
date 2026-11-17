@@ -7,9 +7,7 @@ use std::time::{Duration, Instant};
 use barcraft_core::apps::{DockItem, PinnedApp, WindowRef, build_dock_items, normalize_path};
 use barcraft_core::clock::Stopwatch;
 use barcraft_core::focus::FocusTimer;
-use barcraft_core::{
-    DockEdge, DockLayout, DockSize, IndicatorStyle, Settings, Theme, ThemeId, WidgetKind,
-};
+use barcraft_core::{DockEdge, DockLayout, DockSize, IndicatorStyle, Settings, Theme, WidgetKind};
 use barcraft_win32::{AppBar, Backdrop, Edge, PxRect, WindowId};
 use egui::{
     Align2, Color32, CornerRadius, Id, Margin, Popup, PopupCloseBehavior, Pos2, Rect, RectAlign,
@@ -98,6 +96,8 @@ struct Placement {
     edge: DockEdge,
     size: DockSize,
     scale: f32,
+    /// Windows may use the space under the dock (nothing is reserved).
+    float: bool,
 }
 
 /// Something a click on an app asked for, applied after drawing.
@@ -127,7 +127,9 @@ struct BarApp {
     calendar: Option<(i32, u32)>,
     settings_open: bool,
     settings_ui: SettingsUi,
-    styled_for: Option<ThemeId>,
+    styled_for: Option<Theme>,
+    /// Whether Windows is in light mode, as the poller last read it.
+    windows_light: bool,
     /// Widths measured on the last frame, used to fit the app area and the full-width layout.
     widgets_width: f32,
     apps_scroll: f32,
@@ -181,8 +183,11 @@ impl BarApp {
         if let Some(w) = window {
             barcraft_win32::style_dock_window(w);
         }
-        let appbar = window.and_then(AppBar::register);
-        if appbar.is_none() && !launch.preview {
+        // With "windows under the dock" nothing is reserved, so no appbar is registered.
+        let appbar = window
+            .filter(|_| !settings.float_over_windows)
+            .and_then(AppBar::register);
+        if appbar.is_none() && !launch.preview && !settings.float_over_windows {
             log::warn!("could not reserve screen space for the dock; windows may cover it");
         }
         if !settings.pins_imported {
@@ -214,6 +219,7 @@ impl BarApp {
             settings_open: open_settings,
             settings_ui: SettingsUi::default(),
             styled_for: None,
+            windows_light: barcraft_win32::system_uses_light_theme().unwrap_or(false),
             widgets_width: 0.0,
             apps_scroll: 0.0,
             widgets_scroll: 0.0,
@@ -248,7 +254,7 @@ impl BarApp {
             backdrop: self
                 .backdrop
                 .as_ref()
-                .filter(|_| self.settings.theme.theme().glass)
+                .filter(|_| self.theme().glass)
                 .map(Backdrop::window),
             monitor: self.placement.map(|p| p.monitor),
             hide_for_fullscreen: self.settings.hide_for_fullscreen,
@@ -289,9 +295,17 @@ impl BarApp {
             edge: self.settings.edge,
             size: self.settings.size,
             scale,
+            float: self.settings.float_over_windows,
         };
         if !force && self.placement == Some(want) {
             return;
+        }
+        // Reserve the strip, or give it back so maximised windows reach the screen edge and the
+        // dock floats over them.
+        if want.float {
+            self.appbar = None;
+        } else if self.appbar.is_none() {
+            self.appbar = AppBar::register(win);
         }
         let reserve = ((self.settings.size.bar_height() + 2.0 * MARGIN) * scale).round() as i32;
         let popup = (POPUP_SPACE * scale).round() as i32;
@@ -332,13 +346,18 @@ impl BarApp {
         self.poller.send(Command::Watch(self.watch()));
     }
 
+    /// The colours in use: the chosen theme, with "Follow Windows" resolved for the current mode.
+    fn theme(&self) -> Theme {
+        self.settings.theme.resolve(self.windows_light)
+    }
+
     /// Keeps the blurred backdrop exactly under the bar (glass themes only), right below the
     /// dock window, and hidden whenever the dock is.
     fn update_backdrop(&mut self, bar: Rect, scale: f32, hidden_for_fullscreen: bool) {
         let (Some(win), Some(window_px)) = (self.window, self.window_px) else {
             return;
         };
-        if !self.settings.theme.theme().glass {
+        if !self.theme().glass {
             if let Some(b) = self.backdrop.as_mut() {
                 b.set_shown(false);
             }
@@ -378,10 +397,10 @@ impl BarApp {
     }
 
     fn apply_style(&mut self, ctx: &egui::Context, theme: &Theme) {
-        if self.styled_for == Some(self.settings.theme) {
+        if self.styled_for == Some(*theme) {
             return;
         }
-        self.styled_for = Some(self.settings.theme);
+        self.styled_for = Some(*theme);
         let mut v = if theme.dark {
             egui::Visuals::dark()
         } else {
@@ -863,7 +882,7 @@ impl eframe::App for BarApp {
         let ctx = ui.ctx().clone();
         self.place(ctx.pixels_per_point(), false);
         self.take_updates(&ctx);
-        let theme = self.settings.theme.theme();
+        let theme = self.theme();
         self.apply_style(&ctx, &theme);
 
         let (windows, pids, foreground, readings, hidden_for_fullscreen) = {
@@ -898,6 +917,7 @@ impl eframe::App for BarApp {
                     .map(|(app, secs)| (app.to_owned(), secs))
                     .collect(),
                 weather: snap.weather.clone(),
+                windows_light: snap.windows_light,
             };
             (
                 windows,
@@ -907,6 +927,7 @@ impl eframe::App for BarApp {
                 snap.hidden_for_fullscreen,
             )
         };
+        self.windows_light = readings.windows_light;
         let items = build_dock_items(&self.settings.pinned, &windows, &mut self.seen_order);
 
         let size = self.settings.size;

@@ -161,3 +161,6 @@ impl Backdrop {
     pub fn place(&mut self, _dock: WindowId, _rect: PxRect) {}
     pub fn set_shown(&mut self, _shown: bool) {}
 }
+pub fn system_uses_light_theme() -> Option<bool> {
+    None
+}

@@ -12,9 +12,9 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClassNameW, GetForegroundWindow,
     GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, PostMessageW, SW_MINIMIZE,
-    SW_RESTORE, SetForegroundWindow, ShowWindow, SwitchToThisWindow, WM_CLOSE, WS_EX_APPWINDOW,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed, PostMessageW,
+    SW_MINIMIZE, SW_RESTORE, SetForegroundWindow, ShowWindow, SwitchToThisWindow, WM_CLOSE,
+    WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 use windows::core::{BOOL, PWSTR};
 
@@ -328,6 +328,12 @@ pub fn foreground_is_fullscreen(own: WindowId, monitor: PxRect) -> bool {
     }
     let class = class_name(h);
     if SHELL_CLASSES.contains(&class.as_str()) {
+        return false;
+    }
+    // A maximised window also covers the whole screen when the dock reserves no space (it
+    // reaches a little past the edges), but it isn't full-screen: the dock stays.
+    // SAFETY: read-only query on a live handle.
+    if unsafe { IsZoomed(h) }.as_bool() {
         return false;
     }
     match window_rect(h) {

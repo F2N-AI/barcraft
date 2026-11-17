@@ -42,9 +42,13 @@ Craft apps: free, local, no account, no telemetry.
   it. When there are more apps than fit, the app area scrolls.
 - **Out of the way.** Clicking the dock never takes focus from your app, and the dock steps aside
   when a game or a video goes full screen.
-- **Themes and sizes.** Five themes of our own, three sizes, icons that grow a little under the
-  pointer. Two are glass: Smoke (dark) and Frost (light) let the desktop show through the bar,
+- **Themes and sizes.** Six themes of our own, three sizes, icons that grow a little under the
+  pointer. Two are glass: Smoke (dark) and Frost (light) let what's behind show through the bar,
   blurred by Windows itself (rounded corners need Windows 11; Windows 10 keeps them square).
+  The default, Follow Windows, switches between them with Windows' light and dark mode.
+- **Windows under the dock, if you like.** By default the dock keeps its strip of the screen to
+  itself; turn on "Let windows use the space under the dock" and maximised windows reach the
+  edge with the dock floating over them, as on a Mac.
 
 ## The Windows taskbar always comes back
 

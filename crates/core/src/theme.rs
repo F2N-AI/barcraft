@@ -8,7 +8,9 @@ pub struct Rgba(pub u8, pub u8, pub u8, pub u8);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemeId {
+    /// Glass that follows Windows: Frost in light mode, Smoke in dark mode.
     #[default]
+    FollowWindows,
     Graphite,
     Paper,
     Smoke,
@@ -17,7 +19,8 @@ pub enum ThemeId {
 }
 
 impl ThemeId {
-    pub const ALL: [ThemeId; 5] = [
+    pub const ALL: [ThemeId; 6] = [
+        ThemeId::FollowWindows,
         ThemeId::Graphite,
         ThemeId::Paper,
         ThemeId::Smoke,
@@ -27,6 +30,7 @@ impl ThemeId {
 
     pub fn label(self) -> &'static str {
         match self {
+            ThemeId::FollowWindows => "Follow Windows",
             ThemeId::Graphite => "Graphite",
             ThemeId::Paper => "Paper",
             ThemeId::Smoke => "Smoke",
@@ -35,8 +39,20 @@ impl ThemeId {
         }
     }
 
+    /// The colours for this choice, given whether Windows is in light mode.
+    pub fn resolve(self, windows_light: bool) -> Theme {
+        match self {
+            ThemeId::FollowWindows if windows_light => ThemeId::Frost.theme(),
+            ThemeId::FollowWindows => ThemeId::Smoke.theme(),
+            other => other.theme(),
+        }
+    }
+
+    /// The colours for this choice; "Follow Windows" gives its dark-mode look here, use
+    /// [`Self::resolve`] to follow the system.
     pub fn theme(self) -> Theme {
         match self {
+            ThemeId::FollowWindows => ThemeId::Smoke.theme(),
             ThemeId::Graphite => Theme {
                 dark: true,
                 glass: false,
@@ -155,5 +171,21 @@ mod tests {
             assert!(contrast(t.text, t.popup) >= 7.0, "{id:?} text");
             assert!(contrast(t.muted, t.popup) >= 4.5, "{id:?} muted text");
         }
+    }
+}
+
+#[cfg(test)]
+mod follow_tests {
+    use super::*;
+
+    #[test]
+    fn follow_windows_picks_the_glass_for_the_mode() {
+        assert_eq!(ThemeId::FollowWindows.resolve(true), ThemeId::Frost.theme());
+        assert_eq!(
+            ThemeId::FollowWindows.resolve(false),
+            ThemeId::Smoke.theme()
+        );
+        assert_eq!(ThemeId::Paper.resolve(false), ThemeId::Paper.theme());
+        assert!(ThemeId::FollowWindows.resolve(true).glass);
     }
 }
