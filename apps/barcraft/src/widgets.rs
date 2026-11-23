@@ -24,10 +24,11 @@ use crate::fonts::{self, Weight};
 use crate::poller::WeatherState;
 
 /// Horizontal padding inside a card.
-const PAD: f32 = 10.0;
-/// Corner radius of a cell: smaller on glass, where the bar's own corners are tighter.
+const PAD: f32 = 12.0;
+/// Corner radius of a cell: the bar's own radius less the cell's inset, so their curves run
+/// parallel.
 pub fn cell_radius(theme: &Theme) -> f32 {
-    if theme.glass { 6.0 } else { 10.0 }
+    if theme.glass { 8.0 } else { 13.0 }
 }
 /// Space between a cell and the bar's top and bottom edge.
 pub const CELL_INSET: f32 = 5.0;
@@ -104,11 +105,40 @@ impl WidgetUi<'_> {
     }
 
     fn label_font(&self) -> FontId {
-        fonts::font(Weight::SemiBold, self.s() * 0.66)
+        fonts::font(Weight::Regular, self.s() * 0.78)
     }
 
     fn value_font(&self) -> FontId {
-        fonts::font(Weight::Bold, self.s() * 1.1)
+        fonts::font(Weight::SemiBold, self.s() * 1.1)
+    }
+
+    /// Green for a battery that charges.
+    fn good(&self) -> Color32 {
+        if self.theme.dark {
+            Color32::from_rgb(52, 199, 89)
+        } else {
+            Color32::from_rgb(36, 160, 66)
+        }
+    }
+
+    /// Red for a battery that is nearly empty.
+    fn bad(&self) -> Color32 {
+        if self.theme.dark {
+            Color32::from_rgb(255, 79, 68)
+        } else {
+            Color32::from_rgb(215, 30, 30)
+        }
+    }
+
+    /// The colour of a battery's liquid: green while charging, red when low, else `normal`.
+    fn battery_colour(&self, p: &PowerStatus, normal: Color32) -> Color32 {
+        if p.charging {
+            self.good()
+        } else if p.percent.is_some_and(|v| v <= 20) {
+            self.bad()
+        } else {
+            normal
+        }
     }
 
     fn ink(&self) -> Color32 {
@@ -141,27 +171,43 @@ impl WidgetUi<'_> {
             .x
     }
 
-    /// Reserves a cell `width` wide and paints its background; returns the cell's rectangle.
+    /// Reserves a cell `width` wide and paints its background, which brightens softly under the
+    /// pointer when the cell can be clicked; returns the cell's rectangle.
     fn cell(&self, ui: &mut Ui, width: f32, sense: Sense) -> (Rect, Response) {
         let (rect, resp) = ui.allocate_exact_size(vec2(width, self.height), sense);
         let cell = rect.shrink2(vec2(1.0, CELL_INSET));
-        let hot = resp.hovered() && sense.senses_click();
-        let fill = if hot {
-            self.theme.hover
-        } else {
-            self.theme.tile
-        };
+        let hot = resp.hovered() && (sense.senses_click() || sense.senses_drag());
+        let t = ui
+            .ctx()
+            .animate_bool_with_time(resp.id.with("hot"), hot, 0.14);
+        let fill = draw::color(self.theme.tile).lerp_to_gamma(draw::color(self.theme.hover), t);
         draw::cell(
             ui.painter(),
             cell,
             cell_radius(&self.theme),
-            draw::color(fill),
+            fill,
             &self.theme,
         );
         (cell, resp)
     }
 
-    /// Paints a small upper-case label over a larger value, left-aligned in `area`.
+    /// Reserves room `width` wide with no background, except a soft one under the pointer;
+    /// for widgets that read best on the bar itself, like the clock.
+    fn bare(&self, ui: &mut Ui, width: f32, sense: Sense) -> (Rect, Response) {
+        let (rect, resp) = ui.allocate_exact_size(vec2(width, self.height), sense);
+        let cell = rect.shrink2(vec2(1.0, CELL_INSET));
+        let t = ui
+            .ctx()
+            .animate_bool_with_time(resp.id.with("hot"), resp.hovered(), 0.14);
+        if t > 0.0 {
+            let fill = draw::color(self.theme.tile).gamma_multiply(t);
+            ui.painter()
+                .rect_filled(cell, cell_radius(&self.theme), fill);
+        }
+        (cell, resp)
+    }
+
+    /// Paints a small label over a larger value, left-aligned in `area`.
     fn two_lines(
         &self,
         ui: &Ui,
@@ -173,32 +219,19 @@ impl WidgetUi<'_> {
     ) {
         let h = area.height();
         ui.painter().text(
-            pos2(area.left() + PAD, area.center().y - h * 0.19),
+            pos2(area.left() + PAD, area.center().y - h * 0.2),
             Align2::LEFT_CENTER,
-            label.to_uppercase(),
+            label,
             self.label_font(),
             label_color,
         );
         ui.painter().text(
-            pos2(area.left() + PAD, area.center().y + h * 0.14),
+            pos2(area.left() + PAD, area.center().y + h * 0.15),
             Align2::LEFT_CENTER,
             value,
             self.value_font(),
             value_color,
         );
-    }
-
-    /// A two-line card with `extra` points of room on its right for an icon or chart.
-    /// Returns the cell, the space for the extra, and the response.
-    fn card(
-        &self,
-        ui: &mut Ui,
-        label: &str,
-        value: &str,
-        extra: f32,
-        sense: Sense,
-    ) -> (Rect, Rect, Response) {
-        self.card_with(ui, label, value, None, extra, sense, self.muted())
     }
 
     /// A card for a value that changes all the time: it is as wide as `widest` would need, so the
@@ -232,9 +265,7 @@ impl WidgetUi<'_> {
                 .map(|w| self.text_width(ui, w, self.value_font()))
                 .unwrap_or(0.0),
         );
-        let text_w = self
-            .text_width(ui, &label.to_uppercase(), self.label_font())
-            .max(value_w);
+        let text_w = self.text_width(ui, label, self.label_font()).max(value_w);
         let width = text_w + 2.0 * PAD + extra;
         let (cell, resp) = self.cell(ui, width, sense);
         let extra_rect = Rect::from_min_max(pos2(cell.right() - extra, cell.top()), cell.max);
@@ -340,7 +371,7 @@ impl WidgetUi<'_> {
                 (time, Some(if pm { "PM" } else { "AM" }))
             }
         };
-        let font = fonts::font(Weight::Bold, self.s() * 1.4);
+        let font = fonts::font(Weight::SemiBold, self.s() * 1.32);
         let small = self.label_font();
         let suffix_w = suffix
             .map(|s| self.text_width(ui, s, small.clone()) + 3.0)
@@ -352,7 +383,7 @@ impl WidgetUi<'_> {
             (true, true) | (false, true) => "88:88:88",
         };
         let widest_w = self.text_width(ui, widest, font.clone()).max(time_w);
-        let (cell, resp) = self.cell(ui, widest_w + suffix_w + 2.0 * PAD + 4.0, Sense::hover());
+        let (cell, resp) = self.bare(ui, widest_w + suffix_w + 2.0 * PAD, Sense::hover());
         let left = cell.center().x - (time_w + suffix_w) / 2.0;
         ui.painter().text(
             pos2(left, cell.center().y),
@@ -388,19 +419,29 @@ impl WidgetUi<'_> {
     }
 
     fn date(&mut self, ui: &mut Ui) {
-        let weekday = self.now.format("%A").to_string();
-        let value = self.now.format("%-d %b").to_string();
-        // The weekday is the eye-catcher, so it takes the accent colour.
-        let (_, _, resp) = self.card_with(
-            ui,
-            &weekday,
-            &value,
-            Some("30 Sep"),
-            0.0,
-            Sense::click(),
-            self.accent(),
+        // A small calendar page: the weekday in red over the day of the month.
+        let side = self.height - 2.0 * CELL_INSET;
+        let (cell, resp) = self.cell(ui, side + 8.0, Sense::click());
+        let h = cell.height();
+        let red = self.bad();
+        ui.painter().text(
+            pos2(cell.center().x, cell.top() + h * 0.27),
+            Align2::CENTER_CENTER,
+            self.now.format("%a").to_string().to_uppercase(),
+            fonts::font(Weight::SemiBold, self.s() * 0.62),
+            red,
         );
-        let resp = resp.on_hover_text("Show the calendar");
+        ui.painter().text(
+            pos2(cell.center().x, cell.center().y + h * 0.13),
+            Align2::CENTER_CENTER,
+            self.now.day().to_string(),
+            fonts::font(Weight::SemiBold, self.s() * 1.42),
+            self.ink(),
+        );
+        let resp = resp.on_hover_text(format!(
+            "{}. Click for the calendar.",
+            self.now.format("%A %-d %B %Y")
+        ));
         if self.preview {
             return;
         }
@@ -517,9 +558,7 @@ impl WidgetUi<'_> {
         let side = self.height - 2.0 * CELL_INSET;
         let (cell, resp) = self.cell(ui, side + 2.0, Sense::hover());
         let fraction = p.percent.map(|v| f32::from(v) / 100.0).unwrap_or(0.0);
-        let low = p.percent.is_some_and(|v| v <= 20) && !p.charging;
-        let colour = if low { self.warn() } else { self.accent() };
-
+        let colour = self.battery_colour(&p, self.accent());
         let phase = self.liquid_phase(ui, &resp, p.charging);
         let radius = cell_radius(&self.theme);
         draw::liquid(
@@ -696,59 +735,46 @@ impl WidgetUi<'_> {
             .percent
             .map(|v| format!("{v}%"))
             .unwrap_or_else(|| "?".into());
-        let label = if p.charging {
-            "Charging"
+        let state = if p.charging {
+            "charging"
         } else if p.on_mains {
-            "Plugged in"
+            "plugged in"
         } else {
-            "Battery"
+            "on battery"
         };
-        // The card itself is the battery: liquid fills it to the charge left, under the text,
-        // and its surface moves while charging or under the pointer. A bolt shows while charging.
-        let bolt = if p.charging { self.s() * 1.3 } else { 0.0 };
+        let font = self.value_font();
+        let text_w = self.text_width(ui, "100%", font.clone());
+        let cap_h = (self.s() * 1.38).round();
+        let cap_w = (cap_h * 2.05).round();
+        let width = PAD + text_w + 8.0 + cap_w + 4.0 + PAD;
+        let (cell, resp) = self.cell(ui, width, Sense::hover());
         let fraction = p.percent.map(|v| f32::from(v) / 100.0).unwrap_or(0.0);
-        // Once the liquid reaches the small label, the usual grey would sink into it.
-        let label_colour = if fraction >= 0.6 {
-            self.ink().gamma_multiply(0.82)
-        } else {
-            self.muted()
-        };
-        let behind = ui.painter().add(egui::Shape::Noop);
-        let (cell, extra, resp) = self.card_with(
-            ui,
-            label,
-            &value,
-            Some("100%"),
-            bolt,
-            Sense::hover(),
-            label_colour,
-        );
-        let low = p.percent.is_some_and(|v| v <= 15) && !p.charging;
-        let colour = if low { self.warn() } else { self.accent() };
+        let colour = self.battery_colour(&p, self.ink());
         let phase = self.liquid_phase(ui, &resp, p.charging);
-        let radius = cell_radius(&self.theme);
-        ui.painter().set(
-            behind,
-            egui::Shape::Vec(draw::liquid_shapes(
-                cell.shrink(1.0),
-                (radius - 1.0).max(0.0),
-                fraction,
-                draw::Liquid {
-                    colour,
-                    opacity: 0.38,
-                    phase,
-                },
-            )),
+        let cap = Rect::from_min_size(
+            pos2(
+                cell.right() - PAD - 4.0 - cap_w,
+                cell.center().y - cap_h / 2.0,
+            ),
+            vec2(cap_w, cap_h),
         );
-        if p.charging {
-            draw::bolt(
-                ui.painter(),
-                pos2(extra.center().x - PAD * 0.4, extra.center().y),
-                self.s() * 1.15,
-                self.ink(),
-            );
-        }
-        resp.on_hover_text(format!("Battery {value}, {}", label.to_lowercase()));
+        ui.painter().text(
+            pos2(cap.left() - 8.0, cell.center().y),
+            Align2::RIGHT_CENTER,
+            &value,
+            font,
+            self.ink(),
+        );
+        draw::battery_capsule(
+            ui.painter(),
+            cap,
+            fraction,
+            colour,
+            self.ink(),
+            phase,
+            p.charging,
+        );
+        resp.on_hover_text(format!("Battery {value}, {state}"));
     }
 
     fn system_tray(&mut self, ui: &mut Ui) {
@@ -820,59 +846,178 @@ impl WidgetUi<'_> {
         }
     }
 
+    /// A volume slider: a capsule that fills with light, the speaker inside it. Drag or click
+    /// along it to set the volume, scroll over it to nudge, click the speaker to mute.
     fn volume(&mut self, ui: &mut Ui) {
         let Some(v) = self.readings.volume else {
             return;
         };
-        let value = format!("{:.0}%", v.level * 100.0);
-        let icon = self.height * 0.62;
-        let label = if v.muted { "Muted" } else { "Sound" };
-        let (_, extra, resp) = self.card_steady(ui, label, &value, "100%", icon, Sense::click());
-        let ink = if v.muted { self.muted() } else { self.ink() };
-        draw::speaker(
-            ui.painter(),
-            extra.translate(vec2(-6.0, 0.0)),
-            v.level,
-            v.muted,
-            ink,
+        let (cell, resp) = self.cell(ui, self.s() * 9.6, Sense::click_and_drag());
+        let track = Rect::from_center_size(
+            cell.center(),
+            vec2(cell.width() - 12.0, (cell.height() * 0.56).round()),
         );
-        if resp.hovered() && !self.preview {
-            self.wheel_used = true;
-            let scroll = ui.input(|i| i.smooth_scroll_delta.y + i.smooth_scroll_delta.x);
-            if scroll.abs() > 0.5 {
-                let step = (scroll / 50.0).clamp(-0.1, 0.1);
-                self.act(Action::SetVolume((v.level + step).clamp(0.0, 1.0)));
+        let knob = track.height();
+        let glyph = Rect::from_min_size(track.min, vec2(knob, knob));
+        // What the user just set shows at once; the system's reading catches up a moment later.
+        let shown_id = resp.id.with("set-level");
+        let now = ui.input(|i| i.time);
+        let mut level = v.level.clamp(0.0, 1.0);
+        if let Some((set, at)) = ui.data(|d| d.get_temp::<(f32, f64)>(shown_id))
+            && now - at < 1.5
+        {
+            level = set;
+        }
+        if !self.preview {
+            let at = resp.interact_pointer_pos();
+            let on_glyph = at.is_some_and(|p| glyph.contains(p));
+            if resp.clicked() && on_glyph {
+                self.act(Action::SetMuted(!v.muted));
+            } else if (resp.dragged() || resp.clicked())
+                && let Some(p) = at
+            {
+                let wanted =
+                    ((p.x - track.left() - knob * 0.5) / (track.width() - knob)).clamp(0.0, 1.0);
+                if (wanted - level).abs() > 0.004 || resp.clicked() {
+                    level = wanted;
+                    ui.data_mut(|d| d.insert_temp(shown_id, (wanted, now)));
+                    self.act(Action::SetVolume(wanted));
+                    if v.muted {
+                        self.act(Action::SetMuted(false));
+                    }
+                }
+            }
+            if resp.hovered() {
+                self.wheel_used = true;
+                let scroll = ui.input(|i| i.smooth_scroll_delta.y + i.smooth_scroll_delta.x);
+                if scroll.abs() > 0.5 {
+                    let step = (scroll / 50.0).clamp(-0.1, 0.1);
+                    let wanted = (level + step).clamp(0.0, 1.0);
+                    ui.data_mut(|d| d.insert_temp(shown_id, (wanted, now)));
+                    self.act(Action::SetVolume(wanted));
+                }
             }
         }
-        let tip = if v.muted {
-            "Muted. Click to unmute."
+        let (track_c, fill_c, glyph_c) = if self.theme.dark {
+            (
+                Color32::from_white_alpha(28),
+                Color32::from_white_alpha(238),
+                Color32::from_rgb(44, 44, 50),
+            )
         } else {
-            "Scroll to change the volume, click to mute"
+            (
+                Color32::from_black_alpha(26),
+                Color32::WHITE,
+                Color32::from_rgb(60, 62, 70),
+            )
         };
-        if resp.on_hover_text(tip).clicked() {
-            self.act(Action::SetMuted(!v.muted));
-        }
+        let round = knob / 2.0;
+        ui.painter().rect_filled(track, round, track_c);
+        let fill_w = knob + (track.width() - knob) * level;
+        let fill = Rect::from_min_size(track.min, vec2(fill_w, knob));
+        let fill_c = if v.muted {
+            fill_c.gamma_multiply(0.45)
+        } else {
+            fill_c
+        };
+        ui.painter().rect_filled(fill, round, fill_c);
+        draw::speaker(
+            ui.painter(),
+            glyph.shrink(knob * 0.04),
+            level,
+            v.muted,
+            glyph_c,
+        );
+        let tip = if v.muted {
+            "Muted. Click the speaker to unmute.".to_owned()
+        } else {
+            format!(
+                "Volume {:.0}%. Drag or scroll to change it, click the speaker to mute.",
+                level * 100.0
+            )
+        };
+        resp.on_hover_text(tip);
     }
 
+    /// What's playing: a small cover, the title over the artist, and the controls.
     fn media(&mut self, ui: &mut Ui) {
+        let art = (self.height - 2.0 * CELL_INSET - 10.0).round();
+        let (cover_a, cover_b) = (
+            self.accent().lerp_to_gamma(Color32::WHITE, 0.15),
+            self.accent()
+                .lerp_to_gamma(Color32::from_rgb(150, 70, 220), 0.6),
+        );
         let Some(m) = self.readings.media.clone() else {
-            let (_, _, resp) = self.card(ui, "Media", "Nothing playing", 0.0, Sense::hover());
+            let text = "Not Playing";
+            let font = fonts::font(Weight::SemiBold, self.s() * 0.95);
+            let text_w = self.text_width(ui, text, font.clone());
+            let (cell, resp) = self.cell(ui, 5.0 + art + 9.0 + text_w + PAD, Sense::hover());
+            let cover = Rect::from_min_size(
+                pos2(cell.left() + 5.0, cell.center().y - art / 2.0),
+                vec2(art, art),
+            );
+            let grey = self.muted();
+            draw::album(
+                ui.painter(),
+                cover,
+                grey.gamma_multiply(0.55),
+                grey.gamma_multiply(0.3),
+                false,
+                0.0,
+            );
+            ui.painter().text(
+                pos2(cover.right() + 9.0, cell.center().y),
+                Align2::LEFT_CENTER,
+                text,
+                font,
+                self.muted(),
+            );
             resp.on_hover_text("Play something in a music app or a browser to control it here");
             return;
         };
-        let title = truncate(&m.title, 26);
+        let title = truncate(&m.title, 24);
         let artist = truncate(
             if m.artist.is_empty() {
                 "Playing"
             } else {
                 &m.artist
             },
-            30,
+            28,
         );
-        let button = self.height * 0.56;
-        let (cell, extra, resp) =
-            self.card(ui, &artist, &title, button * 3.0 + 6.0, Sense::hover());
+        let title_font = fonts::font(Weight::SemiBold, self.s() * 0.98);
+        let artist_font = self.label_font();
+        let text_w = self
+            .text_width(ui, &title, title_font.clone())
+            .max(self.text_width(ui, &artist, artist_font.clone()));
+        let button = (self.height * 0.5).round();
+        let width = 5.0 + art + 9.0 + text_w + 8.0 + button * 3.0 + 6.0;
+        let (cell, resp) = self.cell(ui, width, Sense::hover());
         resp.on_hover_text(format!("{}\n{}", m.title, m.artist));
+        let cover = Rect::from_min_size(
+            pos2(cell.left() + 5.0, cell.center().y - art / 2.0),
+            vec2(art, art),
+        );
+        let t = ui.input(|i| i.time) as f32;
+        draw::album(ui.painter(), cover, cover_a, cover_b, m.playing, t);
+        if m.playing && !self.preview {
+            self.fast_repaint = true;
+        }
+        let text_x = cover.right() + 9.0;
+        let h = cell.height();
+        ui.painter().text(
+            pos2(text_x, cell.center().y - h * 0.15),
+            Align2::LEFT_CENTER,
+            &title,
+            title_font,
+            self.ink(),
+        );
+        ui.painter().text(
+            pos2(text_x, cell.center().y + h * 0.18),
+            Align2::LEFT_CENTER,
+            &artist,
+            artist_font,
+            self.muted(),
+        );
         let glyphs = [
             (MediaGlyph::Previous, MediaAction::Previous, "Previous"),
             (
@@ -886,21 +1031,26 @@ impl WidgetUi<'_> {
             ),
             (MediaGlyph::Next, MediaAction::Next, "Next"),
         ];
+        let controls_left = cell.right() - 6.0 - button * 3.0;
         for (i, (glyph, action, tip)) in glyphs.into_iter().enumerate() {
             let r = Rect::from_center_size(
-                pos2(extra.left() + button * (i as f32 + 0.5), cell.center().y),
+                pos2(controls_left + button * (i as f32 + 0.5), cell.center().y),
                 vec2(button, button),
             );
             let id = ui.scope_id().with(("media-button", i));
             let b = ui.interact(r, id, Sense::click());
-            if b.hovered() {
+            let hot = ui
+                .ctx()
+                .animate_bool_with_time(id.with("hot"), b.hovered(), 0.12);
+            if hot > 0.0 {
                 ui.painter().circle_filled(
                     r.center(),
                     button * 0.48,
-                    draw::color(self.theme.hover),
+                    draw::color(self.theme.hover).gamma_multiply(hot),
                 );
             }
-            draw::media_glyph(ui.painter(), r, glyph, self.ink());
+            let glyph_rect = if i == 1 { r } else { r.shrink(button * 0.1) };
+            draw::media_glyph(ui.painter(), glyph_rect, glyph, self.ink());
             if b.on_hover_text(tip).clicked() {
                 self.act(Action::Media(action));
             }
@@ -1077,22 +1227,54 @@ impl WidgetUi<'_> {
             WeatherState::Loading => ("Weather".to_owned(), "…".to_owned(), Sky::Unknown, true),
             WeatherState::Failed(_) => ("Weather".to_owned(), "?".to_owned(), Sky::Unknown, true),
             WeatherState::Off => (
-                "Weather".to_owned(),
-                "Set place".to_owned(),
+                "Add a place".to_owned(),
+                String::new(),
                 Sky::PartlyCloudy,
                 true,
             ),
         };
-        let icon = self.height * 0.72;
-        let (_, extra, resp) = self.card_steady(ui, &label, &value, "-88°", icon, Sense::click());
-        draw::sky(
-            ui.painter(),
-            extra.translate(vec2(-6.0, 0.0)),
-            sky,
-            day,
-            self.ink(),
-            self.accent(),
+        let icon = (self.height * 0.62).round();
+        let value_font = self.value_font();
+        let label_font = self.label_font();
+        let text_w = if value.is_empty() {
+            self.text_width(ui, &label, label_font.clone())
+        } else {
+            self.text_width(ui, &label, label_font.clone())
+                .max(self.text_width(ui, "-88°", value_font.clone()))
+                .max(self.text_width(ui, &value, value_font.clone()))
+        };
+        let (cell, resp) = self.cell(ui, 6.0 + icon + 6.0 + text_w + PAD, Sense::click());
+        let sky_rect = Rect::from_min_size(
+            pos2(cell.left() + 6.0, cell.center().y - icon / 2.0),
+            vec2(icon, icon),
         );
+        draw::sky(ui.painter(), sky_rect, sky, day, self.ink(), self.accent());
+        let text_x = sky_rect.right() + 6.0;
+        let h = cell.height();
+        if value.is_empty() {
+            ui.painter().text(
+                pos2(text_x, cell.center().y),
+                Align2::LEFT_CENTER,
+                &label,
+                label_font,
+                self.muted(),
+            );
+        } else {
+            ui.painter().text(
+                pos2(text_x, cell.center().y - h * 0.2),
+                Align2::LEFT_CENTER,
+                &label,
+                label_font,
+                self.muted(),
+            );
+            ui.painter().text(
+                pos2(text_x, cell.center().y + h * 0.15),
+                Align2::LEFT_CENTER,
+                &value,
+                value_font,
+                self.ink(),
+            );
+        }
         let tip = match &self.readings.weather {
             WeatherState::Ready { current, .. } => {
                 format!(

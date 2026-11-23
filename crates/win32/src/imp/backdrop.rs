@@ -14,9 +14,9 @@ use windows::Win32::Graphics::Dwm::{
 use windows::Win32::Graphics::Gdi::{BLACK_BRUSH, GetStockObject, HBRUSH};
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, IsWindowVisible, RegisterClassExW, SW_HIDE,
-    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SetWindowPos, ShowWindow, WNDCLASSEXW, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CS_DROPSHADOW, CreateWindowExW, DefWindowProcW, DestroyWindow, IsWindowVisible,
+    RegisterClassExW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SetWindowPos, ShowWindow,
+    WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{BOOL, PCWSTR, s, w};
 
@@ -84,6 +84,8 @@ fn register_class() -> Option<HINSTANCE> {
         let class = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             lpfnWndProc: Some(backdrop_proc),
+            // A soft shadow around the glass, drawn by Windows and rounded with the corners.
+            style: CS_DROPSHADOW,
             hInstance: instance,
             // Painted black, which the compositor treats as see-through here, so only the blur shows.
             // SAFETY: stock objects are owned by the system and never freed.

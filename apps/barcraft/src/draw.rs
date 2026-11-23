@@ -10,19 +10,6 @@ pub fn color(c: Rgba) -> Color32 {
     Color32::from_rgba_unmultiplied(c.0, c.1, c.2, c.3)
 }
 
-/// A 3×3 grid of dots: the button that opens the Start menu.
-pub fn launcher(p: &Painter, rect: Rect, c: Color32) {
-    let side = rect.width().min(rect.height()) * 0.5;
-    let step = side / 2.0;
-    let r = side * 0.12;
-    let origin = rect.center() - vec2(step, step);
-    for row in 0..3 {
-        for col in 0..3 {
-            p.circle_filled(origin + vec2(col as f32 * step, row as f32 * step), r, c);
-        }
-    }
-}
-
 /// A screen with a dashed line under it: "show desktop".
 pub fn desktop(p: &Painter, rect: Rect, c: Color32) {
     let s = rect.width().min(rect.height()) * 0.5;
@@ -207,8 +194,30 @@ pub fn sky(p: &Painter, rect: Rect, sky: Sky, is_day: bool, c: Color32, accent: 
 }
 
 /// A rounded tile with the first letter of the name, for apps whose icon can't be read.
-pub fn letter_tile(p: &Painter, rect: Rect, name: &str, text: Color32, tile: Color32) {
-    p.rect_filled(rect.shrink(rect.width() * 0.06), rect.width() * 0.22, tile);
+/// A stand-in icon for an app whose own can't be read: its first letter on a tile whose colour
+/// comes from the name, so each app keeps its own colour.
+pub fn letter_tile(p: &Painter, rect: Rect, name: &str) {
+    const HUES: [(u8, u8, u8); 8] = [
+        (88, 148, 255),
+        (255, 122, 92),
+        (64, 196, 140),
+        (180, 120, 255),
+        (255, 176, 64),
+        (60, 186, 214),
+        (240, 98, 146),
+        (122, 140, 168),
+    ];
+    let pick = name
+        .bytes()
+        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)));
+    let (r, g, b) = HUES[(pick as usize) % HUES.len()];
+    let base = Color32::from_rgb(r, g, b);
+    let tile = rect.shrink(rect.width() * 0.06);
+    p.add(gradient_fill(
+        &squircle_points(tile),
+        mix(base, Color32::WHITE, 0.22),
+        mix(base, Color32::BLACK, 0.12),
+    ));
     let letter: String = name
         .chars()
         .find(|c| c.is_alphanumeric())
@@ -218,9 +227,36 @@ pub fn letter_tile(p: &Painter, rect: Rect, name: &str, text: Color32, tile: Col
         rect.center(),
         egui::Align2::CENTER_CENTER,
         letter,
-        egui::FontId::proportional(rect.height() * 0.5),
-        text,
+        crate::fonts::font(crate::fonts::Weight::SemiBold, rect.height() * 0.5),
+        Color32::WHITE,
     );
+}
+
+/// The Start button, drawn as an app tile of its own: a squircle in the accent colour, lit from
+/// above, holding four rounded squares.
+pub fn start_tile(p: &Painter, rect: Rect, accent: Color32, hot: f32, pressed: bool) {
+    let tile = rect.shrink(rect.width() * 0.04);
+    let lift = 0.18 + 0.1 * hot.clamp(0.0, 1.0);
+    let (mut top, mut bottom) = (
+        mix(accent, Color32::WHITE, lift),
+        mix(accent, Color32::BLACK, 0.18),
+    );
+    if pressed {
+        top = mix(top, Color32::BLACK, 0.2);
+        bottom = mix(bottom, Color32::BLACK, 0.2);
+    }
+    p.add(gradient_fill(&squircle_points(tile), top, bottom));
+    let side = tile.width() * 0.2;
+    let gap = tile.width() * 0.075;
+    let c = tile.center();
+    for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+        let centre = c + vec2(dx * (side + gap) / 2.0, dy * (side + gap) / 2.0);
+        p.rect_filled(
+            Rect::from_center_size(centre, vec2(side, side)),
+            side * 0.3,
+            Color32::from_white_alpha(240),
+        );
+    }
 }
 
 /// A ring filled clockwise from the top to `fraction`.
@@ -486,17 +522,20 @@ pub fn analog_clock(
     p.circle_filled(m, 2.0, ink);
 }
 
-/// The light over a cell's upper half and the colour of its thin edge.
+/// The colour of a cell's thin edge and of the glint along its top.
 fn cell_light(theme: &barcraft_core::Theme) -> (Color32, Color32) {
     // On glass, cells catch the light: a brighter edge reads better over a blurred desktop.
     match (theme.glass, theme.dark) {
-        (true, true) => (Color32::from_white_alpha(10), Color32::from_white_alpha(34)),
+        (true, true) => (Color32::from_white_alpha(16), Color32::from_white_alpha(44)),
         (true, false) => (
-            Color32::from_white_alpha(60),
-            Color32::from_white_alpha(140),
+            Color32::from_white_alpha(120),
+            Color32::from_white_alpha(210),
         ),
-        (false, true) => (Color32::from_white_alpha(7), Color32::from_white_alpha(22)),
-        (false, false) => (Color32::from_white_alpha(70), Color32::from_black_alpha(26)),
+        (false, true) => (Color32::from_white_alpha(12), Color32::from_white_alpha(26)),
+        (false, false) => (
+            Color32::from_black_alpha(18),
+            Color32::from_white_alpha(170),
+        ),
     }
 }
 
@@ -621,24 +660,181 @@ pub fn liquid_shapes(rect: Rect, radius: f32, level: f32, look: Liquid) -> Vec<S
     shapes
 }
 
-/// A cell's background: its fill, a faint light over the upper half and a thin edge, so cells
-/// read as separate tiles on the bar.
+/// The outline of a rounded rectangle, clockwise from the top-left corner's start.
+pub fn rounded_points(rect: Rect, radius: f32) -> Vec<Pos2> {
+    let r = radius.clamp(0.0, rect.width().min(rect.height()) / 2.0);
+    let steps = ((r * 0.6).ceil() as usize).clamp(4, 16);
+    let corners = [
+        (pos2(rect.left() + r, rect.top() + r), PI),
+        (pos2(rect.right() - r, rect.top() + r), PI * 1.5),
+        (pos2(rect.right() - r, rect.bottom() - r), 0.0),
+        (pos2(rect.left() + r, rect.bottom() - r), PI * 0.5),
+    ];
+    let mut points = Vec::with_capacity(4 * (steps + 1));
+    for (centre, start) in corners {
+        for i in 0..=steps {
+            let a = start + (PI / 2.0) * i as f32 / steps as f32;
+            points.push(centre + vec2(a.cos(), a.sin()) * r);
+        }
+    }
+    points
+}
+
+/// A "squircle": a square with continuous, softly rounded corners, the shape of an app tile.
+pub fn squircle_points(rect: Rect) -> Vec<Pos2> {
+    // A superellipse of exponent 5: rounder than a rounded square where the sides meet.
+    let n = 5.0_f32;
+    let (c, a, b) = (rect.center(), rect.width() / 2.0, rect.height() / 2.0);
+    (0..72)
+        .map(|i| {
+            let t = TAU * i as f32 / 72.0;
+            let (s, k) = t.sin_cos();
+            let x = k.signum() * k.abs().powf(2.0 / n);
+            let y = s.signum() * s.abs().powf(2.0 / n);
+            c + vec2(a * x, b * y)
+        })
+        .collect()
+}
+
+/// Fills a convex outline with a colour that runs from `top` to `bottom`.
+pub fn gradient_fill(points: &[Pos2], top: Color32, bottom: Color32) -> Shape {
+    let (lo, hi) = points.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+        (lo.min(p.y), hi.max(p.y))
+    });
+    let span = (hi - lo).max(1.0);
+    let mut mesh = egui::Mesh::default();
+    let n = points.len();
+    if n < 3 {
+        return Shape::Noop;
+    }
+    let centre = points
+        .iter()
+        .fold(vec2(0.0, 0.0), |acc, p| acc + p.to_vec2())
+        / n as f32;
+    let shade = |y: f32| mix(top, bottom, (y - lo) / span);
+    mesh.colored_vertex(centre.to_pos2(), shade(centre.y));
+    for p in points {
+        mesh.colored_vertex(*p, shade(p.y));
+    }
+    for i in 0..n {
+        let a = 1 + i as u32;
+        let b = 1 + ((i + 1) % n) as u32;
+        mesh.add_triangle(0, a, b);
+    }
+    Shape::mesh(mesh)
+}
+
+/// A one-pixel line of light along `y`, brightest in the middle and fading out at both ends.
+pub fn glint(y: f32, x0: f32, x1: f32, c: Color32) -> Shape {
+    let mut mesh = egui::Mesh::default();
+    let clear = Color32::TRANSPARENT;
+    let stops = [(0.0, clear), (0.22, c), (0.78, c), (1.0, clear)];
+    for (i, (t, col)) in stops.iter().enumerate() {
+        let x = x0 + (x1 - x0) * t;
+        mesh.colored_vertex(pos2(x, y - 0.5), *col);
+        mesh.colored_vertex(pos2(x, y + 0.5), *col);
+        if i > 0 {
+            let j = (2 * i) as u32;
+            mesh.add_triangle(j - 2, j - 1, j);
+            mesh.add_triangle(j - 1, j + 1, j);
+        }
+    }
+    Shape::mesh(mesh)
+}
+
+/// A cell's background: a soft platter with a hairline edge and a glint of light along its top.
 pub fn cell(p: &Painter, rect: Rect, radius: f32, fill: Color32, theme: &barcraft_core::Theme) {
     let r = radius.round().clamp(0.0, 255.0) as u8;
     p.rect_filled(rect, r, fill);
-    let (sheen, edge) = cell_light(theme);
-    let upper = Rect::from_min_max(rect.min, pos2(rect.right(), rect.center().y));
-    p.rect_filled(
-        upper,
-        egui::CornerRadius {
-            nw: r,
-            ne: r,
-            sw: 0,
-            se: 0,
-        },
-        sheen,
-    );
+    let (edge, glint_colour) = cell_light(theme);
     p.rect_stroke(rect, r, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+    let inset = radius * 0.9;
+    p.add(glint(
+        rect.top() + 1.0,
+        rect.left() + inset,
+        rect.right() - inset,
+        glint_colour,
+    ));
+}
+
+/// A battery in the shape the eye expects: a rounded body with a nub, filled with liquid to
+/// `level`, and a bolt over it while charging.
+#[allow(clippy::too_many_arguments)]
+pub fn battery_capsule(
+    p: &Painter,
+    rect: Rect,
+    level: f32,
+    liquid_colour: Color32,
+    outline: Color32,
+    phase: f32,
+    charging: bool,
+) {
+    let r = rect.height() * 0.32;
+    let line = outline.gamma_multiply(0.5);
+    p.rect_stroke(rect, r, Stroke::new(1.3, line), egui::StrokeKind::Inside);
+    let nub = Rect::from_min_size(
+        pos2(rect.right() + 1.2, rect.center().y - rect.height() * 0.17),
+        vec2(2.4, rect.height() * 0.34),
+    );
+    p.rect_filled(nub, 1.2, line);
+    let inner = rect.shrink(2.6);
+    liquid(
+        p,
+        inner,
+        (r - 2.6).max(1.0),
+        level,
+        Liquid {
+            colour: liquid_colour,
+            opacity: 1.0,
+            phase,
+        },
+    );
+    if charging {
+        let c = inner.center();
+        let h = rect.height() * 0.95;
+        bolt(p, c, h * 1.18, Color32::from_black_alpha(150));
+        bolt(p, c, h, Color32::WHITE);
+    }
+}
+
+/// A small album cover: a tile in two colours with a note on it, or three bars that dance to the
+/// music while something plays. `t` is the time in seconds.
+pub fn album(p: &Painter, rect: Rect, a: Color32, b: Color32, playing: bool, t: f32) {
+    p.add(gradient_fill(&squircle_points(rect), a, b));
+    let ink = Color32::from_white_alpha(235);
+    let (w, h, c) = (rect.width(), rect.height(), rect.center());
+    if playing {
+        let bar_w = w * 0.12;
+        for (k, speed) in [(0.0f32, 7.1f32), (1.0, 9.3), (2.0, 6.2)] {
+            let x = c.x + (k - 1.0) * bar_w * 1.8;
+            let swing = 0.5 + 0.5 * (t * speed + k * 1.9).sin();
+            let bar_h = h * (0.18 + 0.38 * swing);
+            let bottom = c.y + h * 0.24;
+            p.rect_filled(
+                Rect::from_min_max(
+                    pos2(x - bar_w / 2.0, bottom - bar_h),
+                    pos2(x + bar_w / 2.0, bottom),
+                ),
+                bar_w / 2.0,
+                ink,
+            );
+        }
+    } else {
+        // A quaver: a round head, a stem and a flag.
+        let head = c + vec2(-w * 0.09, h * 0.17);
+        let rh = h * 0.12;
+        p.circle_filled(head, rh, ink);
+        let stem_x = head.x + rh * 0.85;
+        let top = c.y - h * 0.24;
+        p.line_segment(
+            [pos2(stem_x, head.y), pos2(stem_x, top)],
+            Stroke::new(w * 0.06, ink),
+        );
+        p.line_segment(
+            [pos2(stem_x, top), pos2(stem_x + w * 0.16, top + h * 0.13)],
+            Stroke::new(w * 0.06, ink),
+        );
+    }
 }
 
 /// A lightning bolt, for charging.
@@ -656,4 +852,47 @@ pub fn bolt(p: &Painter, center: Pos2, height: f32, c: Color32) {
     ];
     p.add(Shape::convex_polygon(upper, c, Stroke::NONE));
     p.add(Shape::convex_polygon(lower, c, Stroke::NONE));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inside(points: &[Pos2], rect: Rect) -> bool {
+        points.iter().all(|p| rect.expand(0.01).contains(*p))
+    }
+
+    #[test]
+    fn rounded_outlines_stay_in_their_box_and_reach_its_sides() {
+        let r = Rect::from_min_size(pos2(10.0, 20.0), vec2(120.0, 40.0));
+        for radius in [0.0, 8.0, 13.0, 500.0] {
+            let pts = rounded_points(r, radius);
+            assert!(inside(&pts, r), "radius {radius}");
+            let top = pts.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+            let right = pts.iter().map(|p| p.x).fold(f32::MIN, f32::max);
+            assert!((top - r.top()).abs() < 0.01 && (right - r.right()).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn squircles_fill_their_square_with_soft_corners() {
+        let r = Rect::from_min_size(pos2(0.0, 0.0), vec2(40.0, 40.0));
+        let pts = squircle_points(r);
+        assert!(inside(&pts, r));
+        // Rounder than a square at the corner, fuller than a circle.
+        let corner = pts
+            .iter()
+            .map(|p| p.distance(r.center()))
+            .fold(f32::MIN, f32::max);
+        assert!(corner > 20.0 * 1.15 && corner < 20.0 * 1.4142, "{corner}");
+    }
+
+    #[test]
+    fn a_fill_needs_at_least_a_triangle() {
+        let two = [pos2(0.0, 0.0), pos2(1.0, 1.0)];
+        assert!(matches!(
+            gradient_fill(&two, Color32::WHITE, Color32::BLACK),
+            Shape::Noop
+        ));
+    }
 }

@@ -86,7 +86,7 @@ fn main() {
         }
         Some("--help") | Some("-h") => {
             println!(
-                "{APP_NAME} {}\n\n  barcraft                   start the dock\n  barcraft --open-settings   start the dock with its settings open\n  barcraft --preview         draw the bar in an ordinary window, without docking it\n  barcraft --restore-taskbar bring the Windows taskbar back and exit",
+                "{APP_NAME} {}\n\n  barcraft                   start the dock\n  barcraft --open-settings   start the dock with its settings open\n  barcraft --preview         draw the bar in an ordinary window, without docking it\n  barcraft --preview --hover N  ...as if the pointer rested on app N (from 0)\n  barcraft --restore-taskbar bring the Windows taskbar back and exit",
                 env!("CARGO_PKG_VERSION")
             );
             return;
@@ -97,6 +97,11 @@ fn main() {
     let launch = app::Launch {
         open_settings: args.iter().any(|a| a == "--open-settings"),
         preview: args.iter().any(|a| a == "--preview"),
+        hover: args
+            .iter()
+            .position(|a| a == "--hover")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|n| n.parse().ok()),
     };
     // A preview may run beside the real dock; only the dock itself must be unique.
     let _instance = if launch.preview {

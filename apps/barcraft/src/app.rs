@@ -25,19 +25,37 @@ use crate::{APP_NAME, draw, save_settings, taskbar};
 /// Gap between the bar and the screen edge, in points.
 const MARGIN: f32 = 6.0;
 /// Inner margin of the bar, left and right, in points.
-const BAR_PAD: f32 = 6.0;
-/// Corner radius of the bar (glass themes use the radius Windows rounds the blur with).
-const BAR_RADIUS: u8 = 16;
+const BAR_PAD: f32 = 8.0;
+/// Corner radius of an opaque bar, in points.
+const BAR_RADIUS: u8 = 18;
+/// Corner radius of a glass bar. Windows rounds the blur behind it less, so the blur is set in
+/// by [`GLASS_INSET`]; with these numbers its corners stay inside the bar's.
+const GLASS_RADIUS: u8 = 13;
+/// How far the blurred backdrop sits inside the bar's edge, in points.
+const GLASS_INSET: f32 = 1.5;
+/// Space between widgets, in points.
+const WIDGET_GAP: f32 = 6.0;
 
-/// The bar's corner radius for `theme`: on glass it must match the corners Windows gives the
-/// blurred backdrop.
+/// The bar's corner radius for `theme`.
 fn bar_radius(theme: &Theme) -> u8 {
     if theme.glass {
-        Backdrop::CORNER_RADIUS_POINTS.round() as u8
+        GLASS_RADIUS
     } else {
         BAR_RADIUS
     }
 }
+
+/// The blur's own corners (rounded by Windows) must stay inside the bar's: an inner corner of
+/// radius r, set in by d, fits an outer one of radius R when sqrt(2)(R - d - r) + r <= R.
+const _: () = {
+    let (big, inset, blur) = (
+        GLASS_RADIUS as f32,
+        GLASS_INSET,
+        Backdrop::CORNER_RADIUS_POINTS,
+    );
+    let gap = big - inset - blur;
+    assert!(1.4143 * gap + blur <= big + 0.01);
+};
 /// Room above (or below) the bar for menus, tooltips and the calendar, in points.
 const POPUP_SPACE: f32 = 460.0;
 /// Height of the strip along the screen edge that brings a hidden dock back, in points.
@@ -55,6 +73,9 @@ pub struct Launch {
     /// Draw the bar in an ordinary window instead of docking it: no reserved screen space, no
     /// taskbar changes, no watchdog. For looking at the design next to a running dock.
     pub preview: bool,
+    /// In a preview, draw the bar as if the pointer rested on this app (counted from 0), to
+    /// look at magnification and labels without touching the mouse.
+    pub hover: Option<usize>,
 }
 
 /// The title of the preview window, so tools can find it.
@@ -161,6 +182,12 @@ struct BarApp {
     /// the icons magnified (the app row, plus the room the grown icons take up).
     lens_x: f32,
     lens_zone: Rect,
+    /// Apps opened from the dock and when, so their icons bounce until a window shows.
+    launching: HashMap<String, Instant>,
+    /// See [`Launch::hover`]; only used in a preview.
+    preview_hover: Option<usize>,
+    /// Where each app's cell was last frame.
+    last_cells: Vec<Rect>,
 }
 
 fn own_window(cc: &eframe::CreationContext<'_>) -> Option<WindowId> {
@@ -250,6 +277,9 @@ impl BarApp {
             last_bar_rect: Rect::NOTHING,
             lens_x: 0.0,
             lens_zone: Rect::NOTHING,
+            launching: HashMap::new(),
+            preview_hover: launch.hover.filter(|_| launch.preview),
+            last_cells: Vec::new(),
         };
         app.send_weather();
         // Place the window before its first frame so it never shows in the wrong spot.
@@ -394,7 +424,12 @@ impl BarApp {
             // Come back to check whether it is time to hide.
             ctx.request_repaint_after(HIDE_DELAY);
         }
-        ctx.animate_bool_with_time(Id::unique("barcraft-reveal"), self.revealed, 0.18)
+        ctx.animate_bool_with_time_and_easing(
+            Id::unique("barcraft-reveal"),
+            self.revealed,
+            0.26,
+            egui::emath::easing::cubic_in_out,
+        )
     }
 
     /// The colours in use: the chosen theme, with "Follow Windows" resolved for the current mode.
@@ -426,6 +461,7 @@ impl BarApp {
             return;
         };
         let px = |v: f32| (v * scale).round() as i32;
+        let bar = bar.shrink(GLASS_INSET);
         let rect = PxRect {
             left: window_px.left + px(bar.left()),
             top: window_px.top + px(bar.top()),
@@ -460,11 +496,43 @@ impl BarApp {
         v.window_fill = draw::color(theme.popup);
         v.panel_fill = draw::color(theme.popup);
         v.override_text_color = Some(draw::color(theme.text));
-        v.window_corner_radius = CornerRadius::same(10);
-        v.menu_corner_radius = CornerRadius::same(10);
-        v.selection.bg_fill = draw::color(theme.accent).gamma_multiply(0.6);
+        v.window_corner_radius = CornerRadius::same(14);
+        v.menu_corner_radius = CornerRadius::same(12);
+        v.selection.bg_fill = draw::color(theme.accent).gamma_multiply(0.75);
         v.hyperlink_color = draw::color(theme.accent);
+        let soft = Shadow {
+            offset: [0, 8],
+            blur: 28,
+            spread: 0,
+            color: Color32::from_black_alpha(if theme.dark { 110 } else { 50 }),
+        };
+        v.popup_shadow = soft;
+        v.window_shadow = soft;
+        v.window_stroke = Stroke::new(1.0, draw::color(theme.bar_edge));
+        // Flat controls that light up under the pointer, with rounded corners.
+        for w in [
+            &mut v.widgets.inactive,
+            &mut v.widgets.hovered,
+            &mut v.widgets.active,
+            &mut v.widgets.open,
+        ] {
+            w.corner_radius = CornerRadius::same(7);
+            w.expansion = 0.0;
+        }
+        v.widgets.inactive.bg_stroke = Stroke::NONE;
+        v.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+        v.widgets.hovered.bg_stroke = Stroke::NONE;
+        v.widgets.hovered.weak_bg_fill = draw::color(theme.hover);
+        v.widgets.hovered.bg_fill = draw::color(theme.hover);
+        v.widgets.active.bg_stroke = Stroke::NONE;
+        v.widgets.active.weak_bg_fill = draw::color(theme.accent).gamma_multiply(0.5);
         ctx.set_visuals(v);
+        ctx.all_styles_mut(|s| {
+            s.spacing.button_padding = vec2(10.0, 5.0);
+            s.spacing.menu_margin = Margin::same(6);
+            s.spacing.item_spacing = vec2(6.0, 3.0);
+            s.spacing.interact_size.y = 24.0;
+        });
     }
 
     fn icon(&mut self, ctx: &egui::Context, item: &DockItem) -> Option<egui::TextureId> {
@@ -543,6 +611,26 @@ impl BarApp {
         }
     }
 
+    /// How high an app's icon is up in its launch bounce, in points: it hops while the app
+    /// starts, at most three times, and settles once a window shows (after a full hop).
+    fn bounce(&mut self, ctx: &egui::Context, item: &DockItem, icon_side: f32) -> f32 {
+        const HOP: f32 = 0.55;
+        let Some(start) = self.launching.get(&item.key) else {
+            return 0.0;
+        };
+        let t = start.elapsed().as_secs_f32() / HOP;
+        let hop = t.floor();
+        if hop >= 3.0 || (item.is_running() && hop >= 1.0) {
+            self.launching.remove(&item.key);
+            return 0.0;
+        }
+        ctx.request_repaint();
+        let height = icon_side * 0.5 * (1.0 - 0.25 * hop);
+        // Up quickly, down a little faster, like something light thrown up.
+        let f = t - hop;
+        height * (std::f32::consts::PI * f).sin().powf(0.8)
+    }
+
     /// Lays out one app's cell at its normal size and handles clicks on it. The icon itself is
     /// painted later, by [`paint_icons`], once the lens has said where and how big.
     #[allow(clippy::too_many_arguments)]
@@ -572,6 +660,7 @@ impl BarApp {
             is_front,
             running: item.is_running(),
             windows: item.windows.len(),
+            bounce: self.bounce(ctx, item, icon_side),
         };
 
         let align = match self.settings.edge {
@@ -584,6 +673,7 @@ impl BarApp {
                 [] => {
                     if let Some(p) = &item.launch_path {
                         actions.push(AppAction::Launch(p.clone()));
+                        self.launching.insert(item.key.clone(), Instant::now());
                     }
                 }
                 [only] => {
@@ -799,6 +889,8 @@ struct IconDraw {
     is_front: bool,
     running: bool,
     windows: usize,
+    /// How high the icon is in its launch bounce, in points.
+    bounce: f32,
 }
 
 /// What [`paint_icons`] needs to know about the row this frame.
@@ -824,7 +916,8 @@ struct IconLook<'a> {
 /// Paints the app icons where the lens puts them, the one under the pointer on top and with its
 /// name above it.
 fn paint_icons(ctx: &egui::Context, painter: &egui::Painter, icons: &[IconDraw], look: &IconLook) {
-    let grow_room = look.icon_side * (look.lens.peak - 1.0).max(0.0) + 8.0;
+    // Room for icons grown by the lens or up in a launch bounce.
+    let grow_room = look.icon_side * (look.lens.peak - 1.0).max(0.5) + 8.0;
     let (top, bottom) = match look.edge {
         DockEdge::Bottom => (look.bar.top() - grow_room, look.bar.bottom()),
         DockEdge::Top => (look.bar.top(), look.bar.bottom() + grow_room),
@@ -864,8 +957,11 @@ fn paint_icons(ctx: &egui::Context, painter: &egui::Painter, icons: &[IconDraw],
         let x1 = look.lens.position(icon.cell.right(), lens_x, look.amount);
         let cx = (x0 + x1) * 0.5;
         let scale = look.lens.scale(icon.cell.center().x, lens_x, look.amount);
-        let press = if icon.pressed { 0.92 } else { 1.0 };
-        let side = look.icon_side * scale * press;
+        let side = look.icon_side * scale;
+        let lift = match look.edge {
+            DockEdge::Bottom => -icon.bounce,
+            DockEdge::Top => icon.bounce,
+        };
         // Icons grow away from the screen edge, all standing on the same line.
         let rect = match look.edge {
             DockEdge::Bottom => {
@@ -882,11 +978,22 @@ fn paint_icons(ctx: &egui::Context, painter: &egui::Painter, icons: &[IconDraw],
                     pos2(cx + side / 2.0, base + side),
                 )
             }
+        }
+        .translate(vec2(0.0, lift));
+        // Pressed icons darken, as a key does under a finger.
+        let tint = if icon.pressed {
+            Color32::from_gray(165)
+        } else {
+            Color32::WHITE
         };
         if Some(i) == pointed && !look.magnify {
             // Without magnification a soft patch behind the icon is the only sign of the pointer.
-            let glow = Rect::from_center_size(icon.cell.center(), vec2(side + 10.0, side + 10.0));
-            painter.rect_filled(glow, 9, draw::color(look.theme.hover));
+            let glow = Rect::from_center_size(icon.cell.center(), vec2(side + 12.0, side + 12.0));
+            painter.add(draw::gradient_fill(
+                &draw::squircle_points(glow),
+                draw::color(look.theme.hover),
+                draw::color(look.theme.tile),
+            ));
         }
         match icon.texture {
             Some(tex) => {
@@ -894,38 +1001,38 @@ fn paint_icons(ctx: &egui::Context, painter: &egui::Painter, icons: &[IconDraw],
                     tex,
                     rect,
                     Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                    Color32::WHITE,
+                    tint,
                 );
             }
-            None => draw::letter_tile(
-                &painter,
-                rect,
-                &icon.name,
-                draw::color(look.theme.text),
-                draw::color(look.theme.hover),
-            ),
+            None => draw::letter_tile(&painter, rect, &icon.name),
         }
         if icon.running {
-            let ink = draw::color(if icon.is_front {
-                look.theme.accent
-            } else {
-                look.theme.muted
-            });
+            // Quiet marks in the text colour, a little brighter for the app in front; one per
+            // window, up to three.
+            let ink =
+                draw::color(look.theme.text).gamma_multiply(if icon.is_front { 0.95 } else { 0.6 });
             // Halfway between the icon and the bar's edge.
             let gap = (icon.cell.height() - look.icon_side) * 0.25;
             let y = match look.edge {
                 DockEdge::Bottom => icon.cell.bottom() - gap,
                 DockEdge::Top => icon.cell.top() + gap,
             };
+            let count = icon.windows.clamp(1, 3);
             match look.indicator {
-                IndicatorStyle::Dot => {
-                    painter.circle_filled(pos2(cx, y), 2.0, ink);
-                }
-                IndicatorStyle::LargeDot => {
-                    painter.circle_filled(pos2(cx, y), 3.0, ink);
+                IndicatorStyle::Dot | IndicatorStyle::LargeDot => {
+                    let r = if look.indicator == IndicatorStyle::Dot {
+                        1.9
+                    } else {
+                        2.6
+                    };
+                    let step = r * 2.0 + 2.5;
+                    let first = cx - step * (count as f32 - 1.0) / 2.0;
+                    for k in 0..count {
+                        painter.circle_filled(pos2(first + step * k as f32, y), r, ink);
+                    }
                 }
                 IndicatorStyle::Line => {
-                    let w = if icon.is_front { 18.0 } else { 10.0 };
+                    let w = if icon.is_front { 16.0 } else { 8.0 } + 4.0 * (count as f32 - 1.0);
                     painter.rect_filled(
                         Rect::from_center_size(pos2(cx, y), vec2(w, 3.0)),
                         1.5,
@@ -933,31 +1040,24 @@ fn paint_icons(ctx: &egui::Context, painter: &egui::Painter, icons: &[IconDraw],
                     );
                 }
             }
-            if icon.windows > 1 {
-                let badge = pos2(rect.right() - 2.0, rect.top() + 2.0);
-                painter.circle_filled(badge, 7.0, draw::color(look.theme.popup));
-                painter.text(
-                    badge,
-                    Align2::CENTER_CENTER,
-                    icon.windows.min(9).to_string(),
-                    crate::fonts::font(crate::fonts::Weight::Bold, 9.5),
-                    draw::color(look.theme.text),
-                );
-            }
         }
         if Some(i) == pointed {
             name = Some((rect, icon.name.as_str()));
         }
     }
+    // The label fades in when the pointer arrives and simply follows it from icon to icon.
+    let showing = name.is_some() && !Popup::is_any_open(ctx);
+    let fade = ctx.animate_bool_with_time(Id::unique("barcraft-app-name-fade"), showing, 0.12);
     if let Some((rect, text)) = name
-        && !Popup::is_any_open(ctx)
+        && showing
     {
-        paint_name(ctx, look, rect, text);
+        paint_name(ctx, look, rect, text, fade);
     }
 }
 
-/// The app's name in a small label just past its icon, away from the screen edge.
-fn paint_name(ctx: &egui::Context, look: &IconLook, icon: Rect, text: &str) {
+/// The app's name in a small label just past its icon, away from the screen edge, with a little
+/// pointer at the icon. `fade` (0 to 1) is how far it has faded in.
+fn paint_name(ctx: &egui::Context, look: &IconLook, icon: Rect, text: &str, fade: f32) {
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Tooltip,
         Id::unique("barcraft-app-name"),
@@ -967,10 +1067,12 @@ fn paint_name(ctx: &egui::Context, look: &IconLook, icon: Rect, text: &str) {
         crate::fonts::font(crate::fonts::Weight::SemiBold, 12.5),
         draw::color(look.theme.text),
     );
-    let size = galley.size() + vec2(20.0, 10.0);
+    let size = galley.size() + vec2(22.0, 11.0);
+    // It rises a few points into place as it fades in.
+    let rise = (1.0 - fade) * 4.0;
     let y = match look.edge {
-        DockEdge::Bottom => icon.top() - 8.0 - size.y / 2.0,
-        DockEdge::Top => icon.bottom() + 8.0 + size.y / 2.0,
+        DockEdge::Bottom => icon.top() - 11.0 - size.y / 2.0 + rise,
+        DockEdge::Top => icon.bottom() + 11.0 + size.y / 2.0 - rise,
     };
     let mut rect = Rect::from_center_size(pos2(icon.center().x, y), size);
     // Kept on screen at the ends of a full-width bar.
@@ -978,67 +1080,115 @@ fn paint_name(ctx: &egui::Context, look: &IconLook, icon: Rect, text: &str) {
     let dx = (screen.left() + 4.0 - rect.left()).max(0.0)
         + (screen.right() - 4.0 - rect.right()).min(0.0);
     rect = rect.translate(vec2(dx, 0.0));
-    let radius = CornerRadius::same(8);
+    let radius = CornerRadius::same(9);
+    let fill = draw::color(look.theme.popup).gamma_multiply(fade);
     painter.add(
         Shadow {
-            offset: [0, 2],
-            blur: 10,
+            offset: [0, 3],
+            blur: 12,
             spread: 0,
-            color: Color32::from_black_alpha(60),
+            color: Color32::from_black_alpha((70.0 * fade) as u8),
         }
         .as_shape(rect, radius),
     );
-    painter.rect_filled(rect, radius, draw::color(look.theme.popup));
+    painter.rect_filled(rect, radius, fill);
+    // The pointer: a small triangle from the label towards the icon's centre.
+    let tip_x = icon
+        .center()
+        .x
+        .clamp(rect.left() + 12.0, rect.right() - 12.0);
+    let (base_y, tip_y) = match look.edge {
+        DockEdge::Bottom => (rect.bottom() - 0.5, rect.bottom() + 5.0),
+        DockEdge::Top => (rect.top() + 0.5, rect.top() - 5.0),
+    };
+    painter.add(Shape::convex_polygon(
+        vec![
+            pos2(tip_x - 6.0, base_y),
+            pos2(tip_x + 6.0, base_y),
+            pos2(tip_x, tip_y),
+        ],
+        fill,
+        Stroke::NONE,
+    ));
     painter.rect_stroke(
         rect,
         radius,
-        Stroke::new(1.0, draw::color(look.theme.bar_edge)),
+        Stroke::new(1.0, draw::color(look.theme.bar_edge).gamma_multiply(fade)),
         egui::StrokeKind::Inside,
     );
     let at = rect.center() - galley.size() / 2.0;
-    painter.galley(at, galley, draw::color(look.theme.text));
+    painter.galley(
+        at,
+        galley,
+        draw::color(look.theme.text).gamma_multiply(fade),
+    );
 }
 
+/// The bar: a tinted pane, lighter towards the top as if lit from above, with a hairline rim and
+/// a glint of light along its top edge. Glass gets its shadow from Windows, under the blur.
 fn bar_background(rect: Rect, theme: &Theme) -> Shape {
     let r = bar_radius(theme);
     let radius = CornerRadius::same(r);
-    let mut shapes = Vec::with_capacity(4);
-    // Glass gets no shadow: it would show through the fill and muddy the blur.
+    let mut shapes = Vec::with_capacity(6);
     if !theme.glass {
         let shadow = Shadow {
-            offset: [0, 3],
-            blur: 14,
+            offset: [0, 4],
+            blur: 18,
             spread: 0,
-            color: Color32::from_black_alpha(80),
+            color: Color32::from_black_alpha(if theme.dark { 90 } else { 45 }),
         }
         .as_shape(rect, radius);
         shapes.push(Shape::Rect(shadow));
     }
-    let sheen_alpha = match (theme.glass, theme.dark) {
-        (true, _) => 14,
-        (false, true) => 9,
-        (false, false) => 60,
-    };
-    let upper = Rect::from_min_max(rect.min, Pos2::new(rect.right(), rect.center().y));
-    let upper_radius = CornerRadius {
-        nw: r,
-        ne: r,
-        sw: 0,
-        se: 0,
-    };
     shapes.push(Shape::rect_filled(rect, radius, draw::color(theme.bar)));
-    shapes.push(Shape::rect_filled(
-        upper,
-        upper_radius,
-        Color32::from_white_alpha(sheen_alpha),
+    // Light from above: strongest at the top, gone by the middle. Set in by a pixel so its
+    // (unsmoothed) edge hides under the rim.
+    let (light, glint, rim) = match (theme.glass, theme.dark) {
+        (true, true) => (16, 70, Color32::from_white_alpha(34)),
+        (true, false) => (60, 200, Color32::from_white_alpha(150)),
+        (false, true) => (10, 40, Color32::from_white_alpha(22)),
+        (false, false) => (50, 160, Color32::from_black_alpha(28)),
+    };
+    let inner = rect.shrink(1.0);
+    let lit = Rect::from_min_max(inner.min, Pos2::new(inner.right(), inner.center().y + 4.0));
+    shapes.push(draw::gradient_fill(
+        &draw::rounded_points(lit, f32::from(r) - 1.0),
+        Color32::from_white_alpha(light),
+        Color32::TRANSPARENT,
     ));
     shapes.push(Shape::rect_stroke(
         rect,
         radius,
-        Stroke::new(1.0, draw::color(theme.bar_edge)),
+        Stroke::new(1.0, rim),
         egui::StrokeKind::Inside,
     ));
+    let edge = f32::from(r) * 0.8;
+    shapes.push(draw::glint(
+        rect.top() + 1.5,
+        rect.left() + edge,
+        rect.right() - edge,
+        Color32::from_white_alpha(glint),
+    ));
     Shape::Vec(shapes)
+}
+
+/// A soft, colourful backdrop for the preview window, standing in for a desktop wallpaper.
+fn paint_wallpaper(ctx: &egui::Context) {
+    let r = ctx.content_rect();
+    let painter = ctx.layer_painter(egui::LayerId::background());
+    let mut mesh = egui::Mesh::default();
+    let corners = [
+        (r.left_top(), Color32::from_rgb(36, 58, 120)),
+        (r.right_top(), Color32::from_rgb(120, 62, 130)),
+        (r.right_bottom(), Color32::from_rgb(214, 120, 84)),
+        (r.left_bottom(), Color32::from_rgb(40, 120, 150)),
+    ];
+    for (p, c) in corners {
+        mesh.colored_vertex(p, c);
+    }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    painter.add(Shape::mesh(mesh));
 }
 
 fn window_title(w: &WindowRef) -> String {
@@ -1064,6 +1214,9 @@ impl eframe::App for BarApp {
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if self.preview {
+            paint_wallpaper(&ctx);
+        }
         self.place(ctx.pixels_per_point(), false);
         self.take_updates(&ctx);
         let theme = self.theme();
@@ -1143,7 +1296,7 @@ impl eframe::App for BarApp {
         let separator_w = if self.settings.widgets.is_empty() {
             0.0
         } else {
-            9.0
+            13.0
         };
         let app_cell = size.icon_size() + 16.0 + gap;
         let min_apps = app_cell * 3.0;
@@ -1167,11 +1320,24 @@ impl eframe::App for BarApp {
         let lens_room = items.len() as f32 * app_cell <= apps_max
             && base_inner + 2.0 * lens.spread(1.0) <= max_inner;
         let lens_pointer = ctx.pointer_hover_pos();
-        let in_row = lens_on && lens_pointer.is_some_and(|p| self.lens_zone.contains(p));
-        if in_row && let Some(p) = lens_pointer {
+        let pinned_hover = self
+            .preview_hover
+            .and_then(|i| self.last_cells.get(i))
+            .map(|r| r.center().x);
+        let in_row = lens_on
+            && (pinned_hover.is_some() || lens_pointer.is_some_and(|p| self.lens_zone.contains(p)));
+        if let Some(x) = pinned_hover {
+            self.lens_x = x;
+        } else if in_row && let Some(p) = lens_pointer {
             self.lens_x = p.x;
         }
-        let lens_amount = ctx.animate_bool_with_time(Id::unique("barcraft-lens"), in_row, 0.16);
+        // Eased, so the icons swell quickly and settle gently.
+        let lens_amount = ctx.animate_bool_with_time_and_easing(
+            Id::unique("barcraft-lens"),
+            in_row,
+            0.2,
+            egui::emath::easing::cubic_out,
+        );
         let lens_pad = if lens_on && lens_room {
             lens.spread(lens_amount)
         } else {
@@ -1214,23 +1380,20 @@ impl eframe::App for BarApp {
                             // Start menu.
                             let (rect, resp) =
                                 ui.allocate_exact_size(vec2(start_w, bar_h), Sense::click());
-                            // Drawn like an app icon: a rounded tile with the launcher on it.
-                            let fill = if resp.hovered() {
-                                theme.hover
-                            } else {
-                                theme.tile
-                            };
+                            // Drawn as an app tile of its own, brightening under the pointer.
+                            let hot = ctx.animate_bool_with_time(
+                                resp.id.with("hot"),
+                                resp.hovered(),
+                                0.12,
+                            );
                             let icon = size.icon_size();
                             let tile = Rect::from_center_size(rect.center(), vec2(icon, icon));
-                            ui.painter().rect_filled(
-                                tile,
-                                (icon * 0.26).round() as u8,
-                                draw::color(fill),
-                            );
-                            draw::launcher(
+                            draw::start_tile(
                                 ui.painter(),
-                                tile.expand(icon * 0.12),
-                                draw::color(theme.text),
+                                tile,
+                                draw::color(theme.accent),
+                                hot,
+                                resp.is_pointer_button_down_on(),
                             );
                             let resp =
                                 resp.on_hover_text("Start (right-click for the dock's menu)");
@@ -1286,15 +1449,13 @@ impl eframe::App for BarApp {
                                 let spare = max_inner - used - separator_w - widgets_w - 2.0 * gap;
                                 ui.add_space(spare.max(0.0));
                             }
+                            // A quiet divider between apps and widgets, with rounded ends.
                             let (rect, _) =
                                 ui.allocate_exact_size(vec2(separator_w, bar_h), Sense::hover());
-                            ui.painter().line_segment(
-                                [
-                                    Pos2::new(rect.center().x, rect.top() + bar_h * 0.3),
-                                    Pos2::new(rect.center().x, rect.bottom() - bar_h * 0.3),
-                                ],
-                                Stroke::new(1.0, draw::color(theme.bar_edge)),
-                            );
+                            let divider =
+                                Rect::from_center_size(rect.center(), vec2(1.5, bar_h * 0.46));
+                            ui.painter()
+                                .rect_filled(divider, 1, draw::color(theme.bar_edge));
                             // Widgets, also scrolling sideways when they don't all fit; the apps
                             // keep room for at least a few icons.
                             let widget_list = self.settings.widgets.clone();
@@ -1313,7 +1474,7 @@ impl eframe::App for BarApp {
                                 )
                                 .show(ui, |ui| {
                                     ui.horizontal_top(|ui| {
-                                        ui.spacing_mut().item_spacing = vec2(gap, 0.0);
+                                        ui.spacing_mut().item_spacing = vec2(WIDGET_GAP, 0.0);
                                         let mut wui = WidgetUi {
                                             theme,
                                             settings,
@@ -1366,6 +1527,7 @@ impl eframe::App for BarApp {
                     magnify: lens_on,
                 };
                 paint_icons(&ctx, ui.painter(), &icons, &look);
+                self.last_cells = icons.iter().map(|i| i.cell).collect();
                 // Where the pointer keeps the icons magnified next frame: the row and its spare
                 // room, from the screen edge to the top of the grown icons.
                 let reach_out =
