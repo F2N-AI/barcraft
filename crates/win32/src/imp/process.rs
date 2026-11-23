@@ -6,7 +6,8 @@ use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, GetLastError, HANDLE,
 };
 use windows::Win32::System::Registry::{
-    HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
+    HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW,
+    RegSetKeyValueW,
 };
 use windows::Win32::System::Threading::{
     CreateMutexW, INFINITE, OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
@@ -107,4 +108,24 @@ pub fn launch_at_startup(name: &str) -> bool {
         )
     };
     res == ERROR_SUCCESS
+}
+
+/// Whether Windows itself (the taskbar, Start, the shell) is in light mode; `None` when the
+/// setting can't be read.
+pub fn system_uses_light_theme() -> Option<bool> {
+    let mut value = 0u32;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    // SAFETY: reads one DWORD into `value`, whose size `size` states.
+    let res = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"),
+            w!("SystemUsesLightTheme"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some((&mut value as *mut u32).cast()),
+            Some(&mut size),
+        )
+    };
+    (res == ERROR_SUCCESS).then_some(value != 0)
 }

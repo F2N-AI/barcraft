@@ -21,6 +21,14 @@ ArtCraft Craft apps (`storytold/craft-contrib`, `standards/house-rules-core.md` 
   all three recovery paths in `apps/barcraft/src/taskbar.rs` working.
 - **Licences.** Dependencies and assets use only MIT, Apache-2.0, BSD-2/3-Clause, ISC, OFL-1.1,
   Ubuntu-font-1.0, Bitstream-Vera, CC0-1.0, CC-BY-4.0 or CC-BY-SA-4.0.
+- **Fonts.** The ArtCraft rule is that font files live in `storytold/craft-fonts`. BarCraft's one
+  exception is its own interface face: three weights of Inter in `assets/fonts/`, copied
+  byte-for-byte from craft-fonts (see `ATTRIBUTION.md`), as craft-fonts' integration guide expects
+  each app to bundle its own core fonts. Any other font comes from craft-fonts, not this repo.
+- **Looking at changes.** `barcraft --preview` draws the bar in an ordinary window without
+  docking it or touching the taskbar, beside a running dock; capture that window, not the screen.
+  `--preview --hover N` shows magnification and labels as if the pointer rested on app N, so
+  nobody's mouse has to move.
 
 ## Working
 

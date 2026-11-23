@@ -64,6 +64,27 @@ impl DockSize {
     }
 }
 
+/// How the bar spreads along its edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DockLayout {
+    /// As wide as its contents, in the middle of the edge.
+    #[default]
+    Centred,
+    /// Across the whole edge: apps on the left, widgets on the right.
+    FullWidth,
+}
+
+impl DockLayout {
+    pub const ALL: [DockLayout; 2] = [DockLayout::Centred, DockLayout::FullWidth];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DockLayout::Centred => "Centred",
+            DockLayout::FullWidth => "Full width",
+        }
+    }
+}
+
 /// How an app with open windows is marked under its icon.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IndicatorStyle {
@@ -134,6 +155,7 @@ pub struct WeatherSettings {
     pub resolved_name: String,
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
+    #[serde(deserialize_with = "lenient::value")]
     pub unit: TempUnit,
 }
 
@@ -144,24 +166,88 @@ pub struct SavedTaskbar {
     pub autohide: bool,
 }
 
+/// Readers that never fail: a value this version doesn't understand (a widget or theme added
+/// by a newer version, a hand-edited typo) falls back to its default instead of making the
+/// whole file unreadable, which would lose the pinned apps and the saved taskbar state.
+mod lenient {
+    use serde::de::DeserializeOwned;
+    use serde::{Deserialize, Deserializer};
+
+    pub fn value<'de, D, T>(d: D) -> Result<T, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: DeserializeOwned + Default,
+    {
+        let raw = serde_json::Value::deserialize(d)?;
+        Ok(serde_json::from_value(raw).unwrap_or_default())
+    }
+
+    /// Keeps every entry it can read and skips the rest.
+    pub fn list<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: DeserializeOwned,
+    {
+        let raw = serde_json::Value::deserialize(d)?;
+        Ok(match raw {
+            serde_json::Value::Array(items) => items
+                .into_iter()
+                .filter_map(|item| serde_json::from_value(item).ok())
+                .collect(),
+            _ => Vec::new(),
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    #[serde(deserialize_with = "lenient::value")]
     pub edge: DockEdge,
+    #[serde(deserialize_with = "lenient::value")]
     pub size: DockSize,
+    #[serde(deserialize_with = "lenient::value")]
+    pub layout: DockLayout,
+    /// Icons near the pointer grow and push their neighbours aside.
+    #[serde(deserialize_with = "lenient::value")]
+    pub magnify_icons: bool,
+    /// How much bigger the icon under the pointer gets, in percent (10 to 100).
+    #[serde(deserialize_with = "lenient::value")]
+    pub magnify_percent: u32,
+    #[serde(deserialize_with = "lenient::value")]
     pub theme: ThemeId,
+    #[serde(deserialize_with = "lenient::value")]
     pub clock_24h: bool,
+    #[serde(deserialize_with = "lenient::value")]
     pub show_seconds: bool,
+    #[serde(deserialize_with = "lenient::value")]
     pub indicator: IndicatorStyle,
+    #[serde(deserialize_with = "lenient::value")]
     pub taskbar_mode: TaskbarMode,
+    #[serde(deserialize_with = "lenient::value")]
     pub launch_at_startup: bool,
+    #[serde(deserialize_with = "lenient::value")]
     pub hide_for_fullscreen: bool,
+    /// Windows may use the space under the dock: maximised windows reach the screen edge and
+    /// the dock floats over them, as on a Mac. Off: the dock keeps its strip to itself.
+    #[serde(deserialize_with = "lenient::value")]
+    pub float_over_windows: bool,
+    /// The dock slides out of sight when not in use and comes back when the pointer reaches
+    /// the screen edge. Implies that windows use the space under it.
+    #[serde(deserialize_with = "lenient::value")]
+    pub auto_hide: bool,
+    #[serde(deserialize_with = "lenient::list")]
     pub widgets: Vec<WidgetKind>,
+    #[serde(deserialize_with = "lenient::list")]
     pub pinned: Vec<PinnedApp>,
     /// Whether the taskbar's pinned apps were already copied into `pinned` once.
+    #[serde(deserialize_with = "lenient::value")]
     pub pins_imported: bool,
+    #[serde(deserialize_with = "lenient::value")]
     pub weather: WeatherSettings,
+    #[serde(deserialize_with = "lenient::value")]
     pub saved_taskbar: Option<SavedTaskbar>,
+    #[serde(deserialize_with = "lenient::value")]
     pub focus_minutes: u32,
 }
 
@@ -170,13 +256,18 @@ impl Default for Settings {
         Self {
             edge: DockEdge::Bottom,
             size: DockSize::Medium,
-            theme: ThemeId::Graphite,
+            layout: DockLayout::Centred,
+            magnify_icons: true,
+            magnify_percent: DEFAULT_MAGNIFY_PERCENT,
+            theme: ThemeId::FollowWindows,
             clock_24h: true,
             show_seconds: false,
             indicator: IndicatorStyle::Dot,
             taskbar_mode: TaskbarMode::Hidden,
             launch_at_startup: false,
             hide_for_fullscreen: true,
+            float_over_windows: false,
+            auto_hide: false,
             widgets: WidgetKind::DEFAULT_SET.to_vec(),
             pinned: Vec::new(),
             pins_imported: false,
@@ -194,6 +285,9 @@ pub enum SettingsError {
     #[error("the settings file is not valid: {0}")]
     Json(#[from] serde_json::Error),
 }
+
+/// How much the icon under the pointer grows unless the user picks otherwise, in percent.
+pub const DEFAULT_MAGNIFY_PERCENT: u32 = 60;
 
 /// The largest settings file we agree to read. A real one is a few kilobytes.
 const MAX_SETTINGS_BYTES: u64 = 4 * 1024 * 1024;
@@ -241,6 +335,11 @@ impl Settings {
             }
         });
         self.focus_minutes = self.focus_minutes.clamp(1, 180);
+        // An unreadable value reads as 0; anything else is kept within what the slider offers.
+        self.magnify_percent = match self.magnify_percent {
+            0 => DEFAULT_MAGNIFY_PERCENT,
+            p => p.clamp(10, 100),
+        };
         let mut keys = Vec::new();
         self.pinned.retain(|p| {
             let key = normalize(&p.path);
@@ -321,9 +420,33 @@ fn move_item<T>(items: &mut [T], is_it: impl Fn(&T) -> bool, delta: isize) {
     }
 }
 
+impl Settings {
+    /// Whether the dock leaves its strip of the screen to other windows.
+    pub fn windows_under_dock(&self) -> bool {
+        self.float_over_windows || self.auto_hide
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn magnification_stays_within_the_slider() {
+        for (raw, want) in [
+            ("\"lots\"", DEFAULT_MAGNIFY_PERCENT),
+            ("0", DEFAULT_MAGNIFY_PERCENT),
+            ("3", 10),
+            ("45", 45),
+            ("900", 100),
+        ] {
+            let json = format!(r#"{{"magnify_percent": {raw}}}"#);
+            let mut s: Settings = serde_json::from_str(&json).unwrap();
+            s.sanitize();
+            assert_eq!(s.magnify_percent, want, "{raw}");
+        }
+        assert_eq!(Settings::default().magnify_percent, DEFAULT_MAGNIFY_PERCENT);
+    }
 
     #[test]
     fn missing_file_gives_defaults() {
@@ -352,6 +475,24 @@ mod tests {
         let s: Settings = serde_json::from_str(r#"{"edge":"Top","something_new":1}"#).unwrap();
         assert_eq!(s.edge, DockEdge::Top);
         assert_eq!(s.size, DockSize::Medium);
+    }
+
+    #[test]
+    fn values_from_another_version_do_not_lose_the_rest() {
+        // A widget and a theme this version doesn't know, and a wrongly typed number.
+        let json = r#"{
+            "theme": "SomeFutureTheme",
+            "widgets": ["Clock", "SomeFutureWidget", "Cpu"],
+            "focus_minutes": "lots",
+            "pinned": [{"path": "C:\\Apps\\a.exe", "name": "A"}, {"broken": true}],
+            "saved_taskbar": {"autohide": true}
+        }"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.theme, ThemeId::default());
+        assert_eq!(s.widgets, vec![WidgetKind::Clock, WidgetKind::Cpu]);
+        assert_eq!(s.focus_minutes, 0);
+        assert_eq!(s.pinned.len(), 1);
+        assert_eq!(s.saved_taskbar, Some(SavedTaskbar { autohide: true }));
     }
 
     #[test]

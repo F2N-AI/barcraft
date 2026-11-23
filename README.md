@@ -1,9 +1,9 @@
 # BarCraft
 
 **An open-source dock with live widgets for Windows 10 and 11.** BarCraft sits on the top or
-bottom edge of the screen, holds your apps and a row of live tiles (clock, calendar, processor and
-memory load, battery, volume, weather, a focus timer), and stands in for the Windows taskbar while
-it runs. Close it and the taskbar comes back as it was.
+bottom edge of the screen, holds your apps and a row of live tiles (what's playing, network
+speed, processor and memory load, disk space, battery, volume, weather, timers and more), and
+stands in for the Windows taskbar while it runs. Close it and the taskbar comes back as it was.
 
 BarCraft is made by [F2N](https://github.com/F2N-AI) and written from scratch in Rust with
 [egui](https://github.com/emilk/egui), in the spirit of the [ArtCraft](https://getartcraft.com)
@@ -12,8 +12,8 @@ Craft apps: free, local, no account, no telemetry.
 > **Status: early alpha.** Windows only. Tried so far on one Windows 11 PC with two screens;
 > not yet tried on Windows 10. Known gaps:
 >
-> - While the taskbar is hidden, its notification area (tray icons, quick settings) is out of
->   reach. Choose "Auto-hide it" in Settings if you need it.
+> - The tray icons aren't on the dock itself: the System tray widget brings the Windows taskbar
+>   up with them, and it hides again once you click elsewhere.
 > - The dock sits on the main screen only; other screens keep their own taskbar.
 > - Only pinned shortcuts (`.lnk`) are imported from the Windows taskbar; pinned Store apps are
 >   not yet.
@@ -27,13 +27,30 @@ Craft apps: free, local, no account, no telemetry.
     With several windows, click to choose one.
   - Middle-click: open a new window.
   - Right-click: the app's windows, pin or unpin, move, close, end task.
-- **Widgets.** Clock, date with a month calendar, processor load with a one-minute chart, memory
-  in use, battery, volume (scroll to change, click to mute), weather for a place you choose,
-  a focus timer, and a show-desktop button. Add, remove and reorder them in Settings.
-- **Top or bottom.** Drag the bar to the other half of the screen, or pick the edge in Settings.
-  BarCraft reserves its strip so maximised windows stop above (or below) it.
-- **Out of the way.** The dock steps aside when a game or a video goes full screen.
-- **Themes and sizes.** Four themes (Graphite, Paper, Smoke, Harbor) and three sizes.
+- **25 widgets, no account needed.** Each sits in its own card, most with two lines in Inter;
+  processor and memory also come as square rings, and the battery card or tile fills with liquid.
+  - Time: clock, analog clock, date with a month calendar, day, month and year progress.
+  - System: processor load with a one-minute chart, memory, network speed, disk space,
+    battery, system tray, notifications, Recycle Bin, show desktop.
+  - Sound and media: what's playing with play/pause/next/previous, volume, microphone mute.
+  - Productivity: focus timer, stopwatch, Time on PC (today's total and top apps, kept on
+    your PC only).
+  - Online: weather for a place you choose, with the next days, sunrise and sunset.
+- **A widget gallery.** Settings show every widget with a live preview, by category, with search.
+- **Top or bottom, centred or full width.** Drag the bar to the other half of the screen, or pick
+  the edge in Settings. BarCraft reserves its strip so maximised windows stop above (or below)
+  it. When there are more apps than fit, the app area scrolls.
+- **Out of the way.** Clicking the dock never takes focus from your app, and the dock steps aside
+  when a game or a video goes full screen.
+- **Themes and sizes.** Six themes of our own and three sizes. App icons sit free on the bar and
+  magnify under the pointer, pushing their neighbours aside, with the app's name above; how much
+  is up to you. Two are glass: Smoke (dark) and Frost (light) let what's behind show through the bar,
+  blurred by Windows itself (rounded corners need Windows 11; Windows 10 keeps them square).
+  The default, Follow Windows, switches between them with Windows' light and dark mode.
+- **Windows under the dock, if you like.** By default the dock keeps its strip of the screen to
+  itself; turn on "Let windows use the space under the dock" and maximised windows reach the
+  edge with the dock floating over them, as on a Mac. Or let it hide: it slides out of sight
+  when you leave it and comes back when the pointer touches the screen edge.
 
 ## The Windows taskbar always comes back
 
@@ -50,7 +67,14 @@ your choice). Three things make sure it returns:
 
 Nothing leaves your PC except the weather widget's requests to
 [Open-Meteo](https://open-meteo.com), and only if you turn that widget on. Settings live in
-`%APPDATA%\BarCraft\settings.json`.
+`%APPDATA%\BarCraft\settings.json`. If you add the Time on PC widget, today's per-app totals are
+kept in `usage.json` next to it, start over each day, and can be cleared in Settings → Privacy.
+
+For trying things out, `BARCRAFT_DATA_DIR` points BarCraft at another folder for its settings,
+`barcraft --open-settings` starts it with the settings window open (add a section, such as
+`look`, to open it there), and `barcraft --preview`
+draws the bar in an ordinary window, without docking it or touching the taskbar, so it can run
+next to your real dock; add `--hover N` to see it as if the pointer rested on app N.
 
 ## Build from source
 

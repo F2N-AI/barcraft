@@ -40,6 +40,10 @@ pub struct WindowRef {
     /// The program that owns the window, when it could be read.
     pub exe: Option<PathBuf>,
     pub minimized: bool,
+    /// The app's own name, when the platform could tell (see [`friendly_name`]).
+    pub app_name: Option<String>,
+    /// The packaged (Store) app the window belongs to, as Windows identifies it.
+    pub app_id: Option<String>,
 }
 
 /// One icon on the dock: a pinned app, a running app, or both.
@@ -54,6 +58,8 @@ pub struct DockItem {
     pub icon_path: Option<PathBuf>,
     /// The file to open for a new window.
     pub launch_path: Option<PathBuf>,
+    /// For a packaged (Store) app, its identity, which gives a better icon than its program.
+    pub app_id: Option<String>,
 }
 
 impl DockItem {
@@ -80,6 +86,42 @@ pub fn display_name(path: &Path) -> String {
     }
 }
 
+/// Program descriptions that name the framework an app is built on, not the app.
+const GENERIC_DESCRIPTIONS: [&str; 7] = [
+    "electron",
+    "chromium",
+    "cef",
+    "nw.js",
+    "application",
+    "app",
+    "program",
+];
+
+/// The name to show for an app, best source first: the name its package gives it (Store apps),
+/// the description in its program file, the product name there, and last the file name.
+/// Descriptions that only name a framework ("Electron") and product names that are really the
+/// operating system's are skipped.
+pub fn friendly_name(
+    package: Option<&str>,
+    description: Option<&str>,
+    product: Option<&str>,
+    exe: &Path,
+) -> String {
+    fn usable(text: Option<&str>) -> Option<&str> {
+        let t = text?.trim();
+        let generic = GENERIC_DESCRIPTIONS
+            .iter()
+            .any(|g| t.eq_ignore_ascii_case(g));
+        let os = t.contains('\u{ae}') || t.contains('\u{2122}') || t.contains("Operating System");
+        (!t.is_empty() && t.chars().count() <= 40 && !generic && !os).then_some(t)
+    }
+    usable(package)
+        .or_else(|| usable(description))
+        .or_else(|| usable(product))
+        .map(str::to_owned)
+        .unwrap_or_else(|| display_name(exe))
+}
+
 /// Builds the dock's app icons.
 ///
 /// Pinned apps come first, in the user's order, each with the windows of its program.
@@ -100,6 +142,7 @@ pub fn build_dock_items(
             windows: Vec::new(),
             icon_path: Some(p.path.clone()),
             launch_path: Some(p.path.clone()),
+            app_id: None,
         })
         .collect();
 
@@ -117,14 +160,15 @@ pub fn build_dock_items(
             loose.push(DockItem {
                 key,
                 name: w
-                    .exe
-                    .as_deref()
-                    .map(display_name)
+                    .app_name
+                    .clone()
+                    .or_else(|| w.exe.as_deref().map(display_name))
                     .unwrap_or_else(|| w.title.clone()),
                 pinned: None,
                 windows: vec![w.clone()],
                 icon_path: w.exe.clone(),
                 launch_path: w.exe.clone(),
+                app_id: w.app_id.clone(),
             });
         }
     }
@@ -160,7 +204,66 @@ mod tests {
             title: format!("window {id}"),
             exe: Some(PathBuf::from(exe)),
             minimized: false,
+            app_name: None,
+            app_id: None,
         }
+    }
+
+    #[test]
+    fn friendly_names_prefer_the_package_then_the_description() {
+        let exe = Path::new("C:\\Program Files\\WindowsApps\\WhatsApp.Root.exe");
+        // A Store app: its package names it, whatever the program file says.
+        assert_eq!(
+            friendly_name(Some("WhatsApp"), Some("WhatsApp.Root"), None, exe),
+            "WhatsApp"
+        );
+        // An Electron app describes itself as Electron; its product name is the real one.
+        let desktop = Path::new("C:\\x\\GitHubDesktop.exe");
+        assert_eq!(
+            friendly_name(None, Some("Electron"), Some("GitHub Desktop"), desktop),
+            "GitHub Desktop"
+        );
+        let explorer = Path::new("C:\\Windows\\Explorer.EXE");
+        assert_eq!(
+            friendly_name(
+                None,
+                Some("Windows Explorer"),
+                Some("Microsoft\u{ae} Windows\u{ae} Operating System"),
+                explorer
+            ),
+            "Windows Explorer"
+        );
+        // Nothing usable: the file name, as before.
+        let host = Path::new("C:\\Windows\\TextInputHost.exe");
+        assert_eq!(
+            friendly_name(
+                Some("  "),
+                Some(""),
+                Some("Microsoft\u{ae} Windows\u{ae} Operating System"),
+                host
+            ),
+            "TextInputHost"
+        );
+        assert_eq!(friendly_name(None, None, None, desktop), "GitHubDesktop");
+    }
+
+    #[test]
+    fn running_apps_use_their_friendly_name_and_package() {
+        let mut order = Vec::new();
+        let mut w = win(3, "C:\\WindowsApps\\WhatsApp.Root.exe");
+        w.app_name = Some("WhatsApp".into());
+        w.app_id = Some("5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App".into());
+        let items = build_dock_items(&[], &[w], &mut order);
+        assert_eq!(items[0].name, "WhatsApp");
+        assert_eq!(
+            items[0].app_id.as_deref(),
+            Some("5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App")
+        );
+        // The program stays what is opened and matched.
+        assert_eq!(
+            items[0].launch_path.as_deref(),
+            Some(Path::new("C:\\WindowsApps\\WhatsApp.Root.exe"))
+        );
     }
 
     #[test]
@@ -225,6 +328,8 @@ mod tests {
             title: "Mystery".into(),
             exe: None,
             minimized: true,
+            app_name: None,
+            app_id: None,
         };
         let items = build_dock_items(&[], &[w], &mut order);
         assert_eq!(items[0].name, "Mystery");

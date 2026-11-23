@@ -3,7 +3,7 @@
 use std::ffi::c_void;
 use std::path::PathBuf;
 
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
@@ -12,12 +12,13 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClassNameW, GetForegroundWindow,
     GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, PostMessageW, SW_MINIMIZE,
-    SW_RESTORE, SetForegroundWindow, ShowWindow, SwitchToThisWindow, WM_CLOSE, WS_EX_APPWINDOW,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed, PostMessageW,
+    SW_MINIMIZE, SW_RESTORE, SetForegroundWindow, ShowWindowAsync, SwitchToThisWindow, WM_CLOSE,
+    WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 use windows::core::{BOOL, PWSTR};
 
+use super::appinfo::app_user_model_id;
 use super::util::{hwnd, id_of, path_from_wide, string_from_wide};
 use crate::{PxRect, WindowId, WindowInfo};
 
@@ -141,11 +142,27 @@ fn shows_on_taskbar(h: HWND) -> bool {
 
 /// The program file of a process, when the process lets us read it.
 pub fn process_exe(pid: u32) -> Option<PathBuf> {
+    process_identity(pid).0
+}
+
+/// The program file of a process and, for a packaged (Store) app, the app's AppUserModelID.
+fn process_identity(pid: u32) -> (Option<PathBuf>, Option<String>) {
     if pid == 0 {
-        return None;
+        return (None, None);
     }
-    // SAFETY: requesting a query-only handle; closed below on every path.
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+    // SAFETY: requesting a query-only handle; closed below.
+    let Ok(handle) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else {
+        return (None, None);
+    };
+    let exe = image_path(handle);
+    let app_id = app_user_model_id(handle);
+    // SAFETY: `handle` came from OpenProcess and is closed exactly once.
+    let _ = unsafe { CloseHandle(handle) };
+    (exe, app_id)
+}
+
+/// The program file behind a process handle opened with query rights.
+fn image_path(handle: HANDLE) -> Option<PathBuf> {
     let mut buf = [0u16; 1024];
     let mut len = buf.len() as u32;
     // SAFETY: `buf` and `len` describe the same writable buffer.
@@ -157,8 +174,6 @@ pub fn process_exe(pid: u32) -> Option<PathBuf> {
             &mut len,
         )
     };
-    // SAFETY: `handle` came from OpenProcess and is closed exactly once.
-    let _ = unsafe { CloseHandle(handle) };
     res.ok()?;
     let path = path_from_wide(&buf);
     if path.as_os_str().is_empty() {
@@ -192,13 +207,16 @@ pub fn list_app_windows(exclude_pid: u32) -> Vec<WindowInfo> {
         if title.is_empty() {
             continue;
         }
-        let mut exe = process_exe(pid);
+        let (mut exe, mut app_id) = process_identity(pid);
         let is_frame_host = exe
             .as_deref()
             .and_then(|p| p.file_name())
             .is_some_and(|n| n.eq_ignore_ascii_case("ApplicationFrameHost.exe"));
-        if is_frame_host {
-            exe = hosted_app_pid(h, pid).and_then(process_exe).or(exe);
+        if is_frame_host && let Some(hosted) = hosted_app_pid(h, pid) {
+            // The app is the hosted process, not the frame host.
+            let (hosted_exe, hosted_id) = process_identity(hosted);
+            exe = hosted_exe.or(exe);
+            app_id = hosted_id;
         }
         // SAFETY: read-only query on a live handle.
         let minimized = unsafe { IsIconic(h) }.as_bool();
@@ -208,6 +226,8 @@ pub fn list_app_windows(exclude_pid: u32) -> Vec<WindowInfo> {
             pid,
             exe,
             minimized,
+            app_id,
+            app_name: None,
         });
     }
     out
@@ -219,12 +239,39 @@ pub fn foreground_window() -> Option<WindowId> {
     if h.is_invalid() { None } else { Some(id_of(h)) }
 }
 
+/// Whether the focused window is part of the shell's own taskbar UI: the taskbar, its tray
+/// and the tray's pop-ups (not File Explorer windows, which share the shell's process).
+pub fn foreground_is_shell_ui() -> bool {
+    // SAFETY: no arguments.
+    let h = unsafe { GetForegroundWindow() };
+    if h.is_invalid() {
+        return false;
+    }
+    let class = class_name(h);
+    if matches!(
+        class.as_str(),
+        "CabinetWClass" | "ExploreWClass" | "Progman" | "WorkerW"
+    ) {
+        return false;
+    }
+    let exe = process_exe(pid_of(h));
+    let name = exe
+        .as_deref()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    class.starts_with("Shell_")
+        || matches!(name.as_str(), "explorer.exe" | "shellexperiencehost.exe")
+}
+
 pub fn is_window(id: WindowId) -> bool {
     // SAFETY: IsWindow accepts any value and reports whether it names a window.
     unsafe { IsWindow(Some(hwnd(id))) }.as_bool()
 }
 
-/// Brings a window to the front, restoring it if minimised.
+/// Brings a window to the front, restoring it if minimised. Show-state changes to other apps'
+/// windows are queued rather than waited for, so an app that has stopped responding cannot
+/// freeze the dock.
 pub fn activate_window(id: WindowId) {
     let h = hwnd(id);
     if !is_window(id) {
@@ -233,7 +280,7 @@ pub fn activate_window(id: WindowId) {
     // SAFETY: the handle names a window; these calls only change its show state and focus.
     unsafe {
         if IsIconic(h).as_bool() {
-            let _ = ShowWindow(h, SW_RESTORE);
+            let _ = ShowWindowAsync(h, SW_RESTORE);
         }
         if !SetForegroundWindow(h).as_bool() {
             // Windows can refuse focus changes; this asks the shell's way instead.
@@ -246,8 +293,8 @@ pub fn minimize_window(id: WindowId) {
     if !is_window(id) {
         return;
     }
-    // SAFETY: the handle names a window; minimising has no other effect.
-    let _ = unsafe { ShowWindow(hwnd(id), SW_MINIMIZE) };
+    // SAFETY: the handle names a window; minimising has no other effect. Queued, as above.
+    let _ = unsafe { ShowWindowAsync(hwnd(id), SW_MINIMIZE) };
 }
 
 /// Asks a window to close, as its close button would.
@@ -303,6 +350,12 @@ pub fn foreground_is_fullscreen(own: WindowId, monitor: PxRect) -> bool {
     }
     let class = class_name(h);
     if SHELL_CLASSES.contains(&class.as_str()) {
+        return false;
+    }
+    // A maximised window also covers the whole screen when the dock reserves no space (it
+    // reaches a little past the edges), but it isn't full-screen: the dock stays.
+    // SAFETY: read-only query on a live handle.
+    if unsafe { IsZoomed(h) }.as_bool() {
         return false;
     }
     match window_rect(h) {

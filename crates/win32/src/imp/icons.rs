@@ -3,21 +3,25 @@
 use std::ffi::c_void;
 use std::path::Path;
 
-use windows::Win32::Foundation::{LPARAM, WPARAM};
+use windows::Win32::Foundation::{LPARAM, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
     DeleteObject, GetDIBits, GetObjectW, HBITMAP, HDC, HGDIOBJ,
 };
 use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
-use windows::Win32::UI::Shell::{SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGetFileInfoW};
+use windows::Win32::UI::Shell::{
+    IShellItemImageFactory, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGetFileInfoW,
+    SIIGBF_ICONONLY,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyIcon, GCLP_HICON, GetClassLongPtrW, GetIconInfo, HICON, ICON_BIG, ICONINFO,
     PrivateExtractIconsW, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_GETICON,
 };
 use windows::core::PCWSTR;
 
+use super::appinfo::apps_folder_item;
 use super::shell::resolve_shortcut;
-use super::util::{hwnd, wide_os};
+use super::util::{Com, hwnd, wide_os};
 use crate::{IconRgba, WindowId};
 
 /// Icons larger than this are refused; nothing on a dock needs more.
@@ -42,6 +46,48 @@ pub fn icon_for_file(path: &Path, size: u32) -> Option<IconRgba> {
         }
     }
     extract(path, 0, size).or_else(|| shell_icon(path))
+}
+
+/// The picture the Start menu shows for a packaged (Store) app, at about `size` pixels. Many of
+/// these apps carry no usable icon in their program file.
+pub fn icon_for_app(app_id: &str, size: u32) -> Option<IconRgba> {
+    let _com = Com::init();
+    let factory: IShellItemImageFactory = apps_folder_item(app_id)?;
+    let side = i32::try_from(size).ok()?.clamp(16, MAX_SIDE);
+    // Icon only: without it the shell answers with a small square tile on a solid plate.
+    // SAFETY: asks the shell for a bitmap that we own and delete below.
+    let bitmap = unsafe { factory.GetImage(SIZE { cx: side, cy: side }, SIIGBF_ICONONLY) }.ok()?;
+    let pixels = (|| {
+        let (w, h) = bitmap_size(bitmap)?;
+        if w > MAX_SIDE || h > MAX_SIDE {
+            return None;
+        }
+        // SAFETY: a memory DC compatible with the screen, deleted below.
+        let dc = unsafe { CreateCompatibleDC(None) };
+        if dc.is_invalid() {
+            return None;
+        }
+        let bgra = read_bgra(dc, bitmap, w, h);
+        // SAFETY: created above, deleted once.
+        let _ = unsafe { DeleteDC(dc) };
+        let mut rgba = bgra?;
+        if rgba.as_chunks::<4>().0.iter().all(|[_, _, _, a]| *a == 0) {
+            return None;
+        }
+        // Straight (not premultiplied) alpha: checked on Store apps, whose fully transparent
+        // pixels still carry colour.
+        for px in rgba.as_chunks_mut::<4>().0 {
+            px.swap(0, 2);
+        }
+        Some(IconRgba {
+            width: w as u32,
+            height: h as u32,
+            rgba,
+        })
+    })();
+    // SAFETY: GetImage gave us this bitmap to delete; deleted exactly once.
+    let _ = unsafe { DeleteObject(HGDIOBJ(bitmap.0)) };
+    pixels
 }
 
 /// The icon a window shows in its title bar.

@@ -1,19 +1,22 @@
 //! Placing the dock on a screen edge, reserving its space, and hiding the system taskbar.
 
-use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateRectRgn, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
     MONITORINFO, MonitorFromPoint, MonitorFromWindow, SetWindowRgn,
 };
 use windows::Win32::UI::Shell::{
     ABE_BOTTOM, ABE_TOP, ABM_GETSTATE, ABM_NEW, ABM_QUERYPOS, ABM_REMOVE, ABM_SETPOS, ABM_SETSTATE,
-    ABS_ALWAYSONTOP, ABS_AUTOHIDE, APPBARDATA, SHAppBarMessage,
+    ABS_ALWAYSONTOP, ABS_AUTOHIDE, APPBARDATA, DefSubclassProc, RemoveWindowSubclass,
+    SHAppBarMessage, SetWindowSubclass,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, FindWindowW, GWL_EXSTYLE, GetCursorPos, GetWindowLongPtrW, HWND_TOPMOST,
-    IsWindowVisible, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, WM_APP, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST,
+    FindWindowExW, FindWindowW, GWL_EXSTYLE, GWL_STYLE, GetCursorPos, GetWindowLongPtrW,
+    HWND_TOPMOST, IsWindowVisible, MA_NOACTIVATE, STYLESTRUCT, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, ShowWindowAsync, WM_APP, WM_MOUSEACTIVATE, WM_NCDESTROY,
+    WM_STYLECHANGING, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
 };
 use windows::core::{PCWSTR, w};
 
@@ -122,18 +125,81 @@ impl Drop for AppBar {
     }
 }
 
+/// The extended-style bits the dock must always have, and the ones it must never have.
+const DOCK_EX_ON: u32 = WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0 | WS_EX_TOPMOST.0;
+const DOCK_EX_OFF: u32 = WS_EX_APPWINDOW.0;
+/// The dock is a plain pop-up. Caption-related styles would make Windows draw a title-bar tint and
+/// a close button over the see-through part of the window as soon as it takes the pointer.
+const DOCK_STYLE_ON: u32 = WS_POPUP.0;
+const DOCK_STYLE_OFF: u32 =
+    WS_CAPTION.0 | WS_SYSMENU.0 | WS_THICKFRAME.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0;
+const DOCK_SUBCLASS_ID: usize = 0xBA2C;
+
+/// Watches the dock window's messages. The window library rewrites the extended style on some
+/// events, which would let a click on the dock take focus from the user's app; this keeps the
+/// dock's bits in place and refuses activation by mouse outright.
+unsafe extern "system" fn dock_subclass(
+    h: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    if msg == WM_MOUSEACTIVATE {
+        return LRESULT(MA_NOACTIVATE as isize);
+    }
+    if msg == WM_NCDESTROY {
+        // SAFETY: removes this subclass from the window that is being destroyed, as required.
+        let _ = unsafe { RemoveWindowSubclass(h, Some(dock_subclass), DOCK_SUBCLASS_ID) };
+    }
+    if msg == WM_STYLECHANGING && lparam.0 != 0 {
+        let which = wparam.0 as i32;
+        // SAFETY: for WM_STYLECHANGING, lparam points at the STYLESTRUCT the system passes,
+        // which we may edit before the change is applied.
+        let change = unsafe { &mut *(lparam.0 as *mut STYLESTRUCT) };
+        if which == GWL_EXSTYLE.0 {
+            change.styleNew = (change.styleNew | DOCK_EX_ON) & !DOCK_EX_OFF;
+        } else if which == GWL_STYLE.0 {
+            change.styleNew = (change.styleNew | DOCK_STYLE_ON) & !DOCK_STYLE_OFF;
+        }
+    }
+    // SAFETY: hands every message on to the next handler in the chain, unchanged.
+    unsafe { DefSubclassProc(h, msg, wparam, lparam) }
+}
+
 /// Makes the dock window stay on top, stay out of Alt+Tab and the taskbar, and never take focus
 /// from the app the user is working in.
 pub fn style_dock_window(id: WindowId) {
     let h = hwnd(id);
-    // SAFETY: reading and writing the extended style of our own window.
+    // SAFETY: subclassing our own window with a procedure that only edits style changes and
+    // answers WM_MOUSEACTIVATE; it removes itself on WM_NCDESTROY.
+    let installed = unsafe { SetWindowSubclass(h, Some(dock_subclass), DOCK_SUBCLASS_ID, 0) };
+    if !installed.as_bool() {
+        log::warn!("could not watch the dock window; clicks on it may take focus");
+    }
+    // SAFETY: reading and writing the styles of our own window, then asking Windows to
+    // recompute its frame, which the style change removes.
     unsafe {
+        let style = GetWindowLongPtrW(h, GWL_STYLE) as u32;
+        let wanted_style = (style | DOCK_STYLE_ON) & !DOCK_STYLE_OFF;
+        if wanted_style != style {
+            SetWindowLongPtrW(h, GWL_STYLE, wanted_style as isize);
+        }
         let ex = GetWindowLongPtrW(h, GWL_EXSTYLE) as u32;
-        let wanted =
-            (ex | WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0 | WS_EX_TOPMOST.0) & !WS_EX_APPWINDOW.0;
+        let wanted = (ex | DOCK_EX_ON) & !DOCK_EX_OFF;
         if wanted != ex {
             SetWindowLongPtrW(h, GWL_EXSTYLE, wanted as isize);
         }
+        let _ = SetWindowPos(
+            h,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
     }
 }
 
@@ -153,9 +219,12 @@ pub fn place_window(id: WindowId, r: PxRect) {
     };
 }
 
+/// Shows or hides a window without waiting for its thread: the dock's windows are shown and
+/// hidden from the poller's thread, and a synchronous `ShowWindow` would block until the dock's
+/// thread handled it.
 pub fn set_window_shown(id: WindowId, shown: bool) {
-    // SAFETY: changes the show state of our own window.
-    let _ = unsafe { ShowWindow(hwnd(id), if shown { SW_SHOWNOACTIVATE } else { SW_HIDE }) };
+    // SAFETY: queues a show-state change for a window; no pointers are passed.
+    let _ = unsafe { ShowWindowAsync(hwnd(id), if shown { SW_SHOWNOACTIVATE } else { SW_HIDE }) };
 }
 
 /// Limits where a window exists, for drawing and for the mouse, to `area` (in coordinates
@@ -243,7 +312,11 @@ pub fn set_taskbar_autohide(on: bool) {
 /// every screen again. Other screens keep their taskbar while the dock runs: the dock covers only
 /// the main screen.
 pub fn set_taskbar_shown(shown: bool) {
-    let trays = if shown { all_trays() } else { primary_tray().into_iter().collect() };
+    let trays = if shown {
+        all_trays()
+    } else {
+        primary_tray().into_iter().collect()
+    };
     for tray in trays {
         // SAFETY: changes only the show state of the shell's taskbar windows.
         let _ = unsafe { ShowWindow(tray, if shown { SW_SHOW } else { SW_HIDE }) };
@@ -253,4 +326,73 @@ pub fn set_taskbar_shown(shown: bool) {
 pub fn taskbar_shown() -> bool {
     // SAFETY: read-only query.
     primary_tray().is_some_and(|h| unsafe { IsWindowVisible(h) }.as_bool())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc::channel;
+    use std::time::{Duration, Instant};
+
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, DispatchMessageW, MSG, PM_REMOVE, PeekMessageW,
+        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+    };
+    use windows::core::w;
+
+    use super::*;
+    use crate::imp::util::id_of;
+
+    /// The poller shows and hides the dock while the dock's own thread may be busy, even
+    /// waiting on the poller. Showing a window must not wait for the thread that owns it.
+    #[test]
+    fn showing_a_window_does_not_wait_for_its_thread() {
+        let (created_tx, created_rx) = channel();
+        let (release_tx, release_rx) = channel::<()>();
+        let owner = std::thread::spawn(move || {
+            // SAFETY: a 1x1 pop-up far off screen, destroyed on this same thread below.
+            let made = unsafe {
+                CreateWindowExW(
+                    WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                    w!("STATIC"),
+                    w!("BarCraft test"),
+                    WS_POPUP,
+                    -32000,
+                    -32000,
+                    1,
+                    1,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            };
+            let Ok(h) = made else {
+                let _ = created_tx.send(None);
+                return;
+            };
+            let _ = created_tx.send(Some(id_of(h)));
+            // Busy: no messages are handled until released (or after a few seconds).
+            let _ = release_rx.recv_timeout(Duration::from_secs(3));
+            let mut msg = MSG::default();
+            // SAFETY: drains this thread's queue into its own window, then destroys it.
+            unsafe {
+                while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                    DispatchMessageW(&msg);
+                }
+                let _ = DestroyWindow(h);
+            }
+        });
+        let Ok(Some(id)) = created_rx.recv_timeout(Duration::from_secs(5)) else {
+            panic!("could not create the test window");
+        };
+        let started = Instant::now();
+        set_window_shown(id, true);
+        let waited = started.elapsed();
+        let _ = release_tx.send(());
+        let _ = owner.join();
+        assert!(
+            waited < Duration::from_millis(500),
+            "showing the window waited {waited:?} for its busy thread"
+        );
+    }
 }

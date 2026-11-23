@@ -445,6 +445,7 @@ dependencies = [
 name = "barcraft-win32"
 version = "0.1.0"
 dependencies = [
+ "log",
  "windows",
 ]
 
