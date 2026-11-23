@@ -461,16 +461,22 @@ fn poll_windows(
         _ => false,
     };
     let mut changed = false;
-    let mut snap = lock(shared);
-    if snap.windows != windows || snap.foreground != foreground {
-        snap.windows = windows;
-        snap.foreground = foreground;
-        changed = true;
-    }
-    if snap.hidden_for_fullscreen != hide {
+    let flipped = {
+        let mut snap = lock(shared);
+        if snap.windows != windows || snap.foreground != foreground {
+            snap.windows = windows;
+            snap.foreground = foreground;
+            changed = true;
+        }
+        let flipped = snap.hidden_for_fullscreen != hide;
         snap.hidden_for_fullscreen = hide;
+        flipped
+    };
+    // Done from here because a hidden window gets no frames to undo it, and only once the
+    // snapshot is unlocked: the dock's thread takes that lock every frame, so showing its
+    // windows while holding it could leave both threads waiting on each other.
+    if flipped {
         if let Some(own) = watch.window {
-            // Done from here because a hidden window gets no frames to undo it.
             barcraft_win32::set_window_shown(own, !hide);
         }
         if let Some(backdrop) = watch.backdrop {

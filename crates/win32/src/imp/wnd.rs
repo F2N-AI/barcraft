@@ -13,7 +13,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClassNameW, GetForegroundWindow,
     GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
     GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed, PostMessageW,
-    SW_MINIMIZE, SW_RESTORE, SetForegroundWindow, ShowWindow, SwitchToThisWindow, WM_CLOSE,
+    SW_MINIMIZE, SW_RESTORE, SetForegroundWindow, ShowWindowAsync, SwitchToThisWindow, WM_CLOSE,
     WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 use windows::core::{BOOL, PWSTR};
@@ -269,7 +269,9 @@ pub fn is_window(id: WindowId) -> bool {
     unsafe { IsWindow(Some(hwnd(id))) }.as_bool()
 }
 
-/// Brings a window to the front, restoring it if minimised.
+/// Brings a window to the front, restoring it if minimised. Show-state changes to other apps'
+/// windows are queued rather than waited for, so an app that has stopped responding cannot
+/// freeze the dock.
 pub fn activate_window(id: WindowId) {
     let h = hwnd(id);
     if !is_window(id) {
@@ -278,7 +280,7 @@ pub fn activate_window(id: WindowId) {
     // SAFETY: the handle names a window; these calls only change its show state and focus.
     unsafe {
         if IsIconic(h).as_bool() {
-            let _ = ShowWindow(h, SW_RESTORE);
+            let _ = ShowWindowAsync(h, SW_RESTORE);
         }
         if !SetForegroundWindow(h).as_bool() {
             // Windows can refuse focus changes; this asks the shell's way instead.
@@ -291,8 +293,8 @@ pub fn minimize_window(id: WindowId) {
     if !is_window(id) {
         return;
     }
-    // SAFETY: the handle names a window; minimising has no other effect.
-    let _ = unsafe { ShowWindow(hwnd(id), SW_MINIMIZE) };
+    // SAFETY: the handle names a window; minimising has no other effect. Queued, as above.
+    let _ = unsafe { ShowWindowAsync(hwnd(id), SW_MINIMIZE) };
 }
 
 /// Asks a window to close, as its close button would.

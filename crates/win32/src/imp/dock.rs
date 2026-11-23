@@ -14,9 +14,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowExW, FindWindowW, GWL_EXSTYLE, GWL_STYLE, GetCursorPos, GetWindowLongPtrW,
     HWND_TOPMOST, IsWindowVisible, MA_NOACTIVATE, STYLESTRUCT, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE,
     SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, WM_APP, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_STYLECHANGING, WS_CAPTION,
-    WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_MAXIMIZEBOX,
-    WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
+    SetWindowPos, ShowWindow, ShowWindowAsync, WM_APP, WM_MOUSEACTIVATE, WM_NCDESTROY,
+    WM_STYLECHANGING, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
 };
 use windows::core::{PCWSTR, w};
 
@@ -219,9 +219,12 @@ pub fn place_window(id: WindowId, r: PxRect) {
     };
 }
 
+/// Shows or hides a window without waiting for its thread: the dock's windows are shown and
+/// hidden from the poller's thread, and a synchronous `ShowWindow` would block until the dock's
+/// thread handled it.
 pub fn set_window_shown(id: WindowId, shown: bool) {
-    // SAFETY: changes the show state of our own window.
-    let _ = unsafe { ShowWindow(hwnd(id), if shown { SW_SHOWNOACTIVATE } else { SW_HIDE }) };
+    // SAFETY: queues a show-state change for a window; no pointers are passed.
+    let _ = unsafe { ShowWindowAsync(hwnd(id), if shown { SW_SHOWNOACTIVATE } else { SW_HIDE }) };
 }
 
 /// Limits where a window exists, for drawing and for the mouse, to `area` (in coordinates
@@ -323,4 +326,73 @@ pub fn set_taskbar_shown(shown: bool) {
 pub fn taskbar_shown() -> bool {
     // SAFETY: read-only query.
     primary_tray().is_some_and(|h| unsafe { IsWindowVisible(h) }.as_bool())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc::channel;
+    use std::time::{Duration, Instant};
+
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, DispatchMessageW, MSG, PM_REMOVE, PeekMessageW,
+        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+    };
+    use windows::core::w;
+
+    use super::*;
+    use crate::imp::util::id_of;
+
+    /// The poller shows and hides the dock while the dock's own thread may be busy, even
+    /// waiting on the poller. Showing a window must not wait for the thread that owns it.
+    #[test]
+    fn showing_a_window_does_not_wait_for_its_thread() {
+        let (created_tx, created_rx) = channel();
+        let (release_tx, release_rx) = channel::<()>();
+        let owner = std::thread::spawn(move || {
+            // SAFETY: a 1x1 pop-up far off screen, destroyed on this same thread below.
+            let made = unsafe {
+                CreateWindowExW(
+                    WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                    w!("STATIC"),
+                    w!("BarCraft test"),
+                    WS_POPUP,
+                    -32000,
+                    -32000,
+                    1,
+                    1,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            };
+            let Ok(h) = made else {
+                let _ = created_tx.send(None);
+                return;
+            };
+            let _ = created_tx.send(Some(id_of(h)));
+            // Busy: no messages are handled until released (or after a few seconds).
+            let _ = release_rx.recv_timeout(Duration::from_secs(3));
+            let mut msg = MSG::default();
+            // SAFETY: drains this thread's queue into its own window, then destroys it.
+            unsafe {
+                while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                    DispatchMessageW(&msg);
+                }
+                let _ = DestroyWindow(h);
+            }
+        });
+        let Ok(Some(id)) = created_rx.recv_timeout(Duration::from_secs(5)) else {
+            panic!("could not create the test window");
+        };
+        let started = Instant::now();
+        set_window_shown(id, true);
+        let waited = started.elapsed();
+        let _ = release_tx.send(());
+        let _ = owner.join();
+        assert!(
+            waited < Duration::from_millis(500),
+            "showing the window waited {waited:?} for its busy thread"
+        );
+    }
 }
