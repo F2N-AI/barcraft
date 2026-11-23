@@ -27,6 +27,8 @@ ArtCraft Craft apps (`storytold/craft-contrib`, `standards/house-rules-core.md` 
   each app to bundle its own core fonts. Any other font comes from craft-fonts, not this repo.
 - **Looking at changes.** `barcraft --preview` draws the bar in an ordinary window without
   docking it or touching the taskbar, beside a running dock; capture that window, not the screen.
+  `--preview --hover N` shows magnification and labels as if the pointer rested on app N, so
+  nobody's mouse has to move.
 
 ## Working
 

@@ -42,8 +42,8 @@ product's code, text or artwork.
   the app's own process, not the frame host.
 - Pinned apps come first in the user's order. Other open programs follow in the order they were
   first seen, so icons don't move when focus changes.
-- Under an open app: a mark (dot, large dot or line). The app in front gets the accent colour;
-  apps with several windows show a count.
+- Under an open app: a quiet mark (dot, large dot or line) in the text colour, a little brighter
+  for the app in front; one dot per window, up to three.
 - Click: no window → open the app; one window → bring it forward, or minimise it if it is already
   in front; several → a list to choose from.
 - Middle-click opens a new window.
@@ -55,7 +55,11 @@ product's code, text or artwork.
   nothing better. Pinned apps keep the name of their shortcut.
 - Store apps take their icon from the Start menu, since many carry only a generic one in their
   program file.
-- An app whose icon can't be read shows a tile with its first letter.
+- An app whose icon can't be read shows its first letter on a coloured tile; the colour comes
+  from the name, so each app keeps its own.
+- An app opened from the dock bounces until its first window shows (three hops at most). A
+  pressed icon darkens.
+- Start is a tile of its own in the accent colour.
 - App icons have no cell behind them. Magnification (on by default, 10 to 100 %): the icon under
   the pointer grows the most and its neighbours less the further away they are, growing away
   from the screen edge and pushing the rest of the row aside. The point under the pointer never
@@ -64,12 +68,20 @@ product's code, text or artwork.
   row the end icon stays the largest. With magnification off, a soft patch marks the icon under
   the pointer.
 - The name of the app under the pointer shows in a small label above its icon (below it on a
-  top dock), with no delay.
+  top dock), with a small pointer at the icon; it fades in at once and follows the pointer.
+- The bar is lit from above (a light gradient and a glint along its top edge) with a hairline
+  rim. On glass the blur sits 1.5 points inside the bar's edge, so the tighter corners Windows
+  gives it stay inside the bar's own, and Windows draws a soft shadow under it. When the dock
+  starts it rises from the screen edge and settles; auto-hide eases in and out.
 
 ## Widgets
 
-- Every widget sits in its own rounded card; most have two lines (a small upper-case label
-  over a larger value), some are a single icon.
+- Every widget sits on a soft rounded platter whose corners run parallel to the bar's, which
+  brightens under the pointer; most have two lines (a small label over a larger value), some are
+  a single icon. The clock sits on the bar itself. Volume is a slider: drag or click along it,
+  scroll over it, click the speaker to mute. The battery card shows the percentage beside a
+  battery shape filled with liquid. The date is a small calendar page. Media shows a cover with
+  bars that move while something plays.
 - Time: clock (12/24-hour, optional seconds), analog clock, date (click for a month calendar,
   with arrows and a jump back to today), day, month and year progress.
 - System: processor load (with a one-minute chart), memory in use (ring), network speed

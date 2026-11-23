@@ -73,7 +73,7 @@ kept in `usage.json` next to it, start over each day, and can be cleared in Sett
 For trying things out, `BARCRAFT_DATA_DIR` points BarCraft at another folder for its settings,
 `barcraft --open-settings` starts it with the settings window open, and `barcraft --preview`
 draws the bar in an ordinary window, without docking it or touching the taskbar, so it can run
-next to your real dock.
+next to your real dock; add `--hover N` to see it as if the pointer rested on app N.
 
 ## Build from source
 

@@ -186,6 +186,8 @@ struct BarApp {
     launching: HashMap<String, Instant>,
     /// See [`Launch::hover`]; only used in a preview.
     preview_hover: Option<usize>,
+    /// When the dock started, for its entrance.
+    started: Instant,
     /// Where each app's cell was last frame.
     last_cells: Vec<Rect>,
 }
@@ -279,6 +281,7 @@ impl BarApp {
             lens_zone: Rect::NOTHING,
             launching: HashMap::new(),
             preview_hover: launch.hover.filter(|_| launch.preview),
+            started: Instant::now(),
             last_cells: Vec::new(),
         };
         app.send_weather();
@@ -430,6 +433,18 @@ impl BarApp {
             0.26,
             egui::emath::easing::cubic_in_out,
         )
+    }
+
+    /// The dock's entrance when it starts: it rises from the screen edge and settles with a
+    /// small overshoot. 1 once it is in place.
+    fn entrance(&self, ctx: &egui::Context) -> f32 {
+        const DURATION: f32 = 0.65;
+        let t = self.started.elapsed().as_secs_f32() / DURATION;
+        if t >= 1.0 {
+            return 1.0;
+        }
+        ctx.request_repaint();
+        egui::emath::easing::back_out(t.max(0.0))
     }
 
     /// The colours in use: the chosen theme, with "Follow Windows" resolved for the current mode.
@@ -1274,7 +1289,7 @@ impl eframe::App for BarApp {
         // Auto-hide: out while the pointer is on the dock (or at the screen edge) or a menu is
         // open; back out of sight a moment after it leaves.
         let auto_hide = self.settings.auto_hide && !self.preview;
-        let shown = self.reveal_amount(&ctx, auto_hide);
+        let shown = self.reveal_amount(&ctx, auto_hide) * self.entrance(&ctx);
         let slide = (1.0 - shown) * (bar_h + MARGIN + 6.0);
         let (anchor, offset) = match (self.preview, self.settings.edge) {
             (true, _) => (Align2::CENTER_CENTER, vec2(0.0, 0.0)),
