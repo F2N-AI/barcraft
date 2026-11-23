@@ -884,7 +884,10 @@ mod tests {
             .iter()
             .map(|p| p.distance(r.center()))
             .fold(f32::MIN, f32::max);
-        assert!(corner > 20.0 * 1.15 && corner < 20.0 * 1.4142, "{corner}");
+        assert!(
+            corner > 20.0 * 1.15 && corner < 20.0 * std::f32::consts::SQRT_2,
+            "{corner}"
+        );
     }
 
     #[test]

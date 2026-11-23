@@ -54,7 +54,7 @@ const _: () = {
         Backdrop::CORNER_RADIUS_POINTS,
     );
     let gap = big - inset - blur;
-    assert!(1.4143 * gap + blur <= big + 0.01);
+    assert!(std::f32::consts::SQRT_2 * gap + blur <= big + 0.01);
 };
 /// Room above (or below) the bar for menus, tooltips and the calendar, in points.
 const POPUP_SPACE: f32 = 460.0;
