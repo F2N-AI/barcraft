@@ -66,10 +66,12 @@ const HIDE_DELAY: Duration = Duration::from_millis(700);
 const RECHECK: Duration = Duration::from_secs(2);
 
 /// How the app was started.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Launch {
     /// Open the settings window straight away.
     pub open_settings: bool,
+    /// The settings section to open at, by name ("look", "widgets", ...).
+    pub settings_section: Option<String>,
     /// Draw the bar in an ordinary window instead of docking it: no reserved screen space, no
     /// taskbar changes, no watchdog. For looking at the design next to a running dock.
     pub preview: bool,
@@ -261,7 +263,7 @@ impl BarApp {
             stopwatch: Stopwatch::default(),
             calendar: None,
             settings_open: open_settings,
-            settings_ui: SettingsUi::default(),
+            settings_ui: SettingsUi::at(launch.settings_section.as_deref()),
             styled_for: None,
             windows_light: barcraft_win32::system_uses_light_theme().unwrap_or(false),
             widgets_width: 0.0,

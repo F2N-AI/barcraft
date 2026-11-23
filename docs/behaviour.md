@@ -102,6 +102,11 @@ product's code, text or artwork.
 
 ## Settings
 
+- A window of its own, in the dock's light or dark colours: a sidebar of sections, each with a
+  coloured icon, and pages of rows grouped on rounded panels, with switches, segmented choices,
+  a slider, a stepper and pill buttons. Themes are picked from pictures of the bar on a piece of
+  desktop. The widget gallery shows each widget live on a strip of bar, with a tick on those
+  already on the dock. `barcraft --open-settings look` opens it at a section.
 - Theme (six of our own; the default, Follow Windows, uses Frost in light mode and Smoke in dark
   mode, following Windows as it changes; Smoke and Frost are glass: a separate, never-focused window under the
   bar asks Windows to blur the desktop behind it, with corners rounded by Windows 11), size

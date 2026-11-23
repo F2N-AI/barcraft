@@ -16,6 +16,7 @@ mod app;
 mod draw;
 mod fonts;
 mod poller;
+mod settings_kit;
 mod settings_window;
 mod taskbar;
 mod widgets;
@@ -86,7 +87,7 @@ fn main() {
         }
         Some("--help") | Some("-h") => {
             println!(
-                "{APP_NAME} {}\n\n  barcraft                   start the dock\n  barcraft --open-settings   start the dock with its settings open\n  barcraft --preview         draw the bar in an ordinary window, without docking it\n  barcraft --preview --hover N  ...as if the pointer rested on app N (from 0)\n  barcraft --restore-taskbar bring the Windows taskbar back and exit",
+                "{APP_NAME} {}\n\n  barcraft                   start the dock\n  barcraft --open-settings [section]  start the dock with its settings open (at a section, e.g. look)\n  barcraft --preview         draw the bar in an ordinary window, without docking it\n  barcraft --preview --hover N  ...as if the pointer rested on app N (from 0)\n  barcraft --restore-taskbar bring the Windows taskbar back and exit",
                 env!("CARGO_PKG_VERSION")
             );
             return;
@@ -96,6 +97,13 @@ fn main() {
 
     let launch = app::Launch {
         open_settings: args.iter().any(|a| a == "--open-settings"),
+        // `--open-settings look` opens it at that section.
+        settings_section: args
+            .iter()
+            .position(|a| a == "--open-settings")
+            .and_then(|i| args.get(i + 1))
+            .filter(|s| !s.starts_with("--"))
+            .cloned(),
         preview: args.iter().any(|a| a == "--preview"),
         hover: args
             .iter()
